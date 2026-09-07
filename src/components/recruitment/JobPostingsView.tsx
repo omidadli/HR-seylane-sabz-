@@ -13,6 +13,7 @@ import {
   Archive,
   Sparkles,
   Trash2,
+  SlidersHorizontal,
 } from 'lucide-react';
 
 interface JobPostingsViewProps {
@@ -20,6 +21,7 @@ interface JobPostingsViewProps {
   activeJobId: string;
   onSelectJob: (id: string) => void;
   onCreateJob: (newJob: Partial<JobPosting>) => void;
+  onConfigureCriteria?: (id: string) => void;
 }
 
 export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
@@ -27,6 +29,7 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
   activeJobId,
   onSelectJob,
   onCreateJob,
+  onConfigureCriteria,
 }) => {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [title, setTitle] = useState('');
@@ -161,19 +164,38 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
               )}
 
               {/* Footer */}
-              <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-xs">
+              <div className="pt-2.5 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
                 <div className="flex items-center gap-1 text-slate-600 font-medium">
                   <Users className="w-3.5 h-3.5 text-emerald-600" />
                   <span>{toPersianDigits(job.applicationsCount)} رزومه دریافت شده</span>
                 </div>
 
-                <span
-                  className={`text-[11px] font-bold ${
-                    isSelected ? 'text-emerald-700' : 'text-slate-400'
-                  }`}
-                >
-                  {isSelected ? 'موقعیت انتخاب‌شده' : 'انتخاب جهت بررسی'}
-                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onConfigureCriteria) {
+                        onConfigureCriteria(job.id);
+                      } else {
+                        onSelectJob(job.id);
+                      }
+                    }}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-bold transition-all border border-emerald-200"
+                    title="تنظیم شاخصه‌ها، وزن‌ها و دستورالعمل هوش مصنوعی"
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-700" />
+                    <span>ماتریس شاخص‌ها و وزن‌دهی AI</span>
+                  </button>
+
+                  <span
+                    className={`text-[11px] font-bold ${
+                      isSelected ? 'text-emerald-700' : 'text-slate-400'
+                    }`}
+                  >
+                    {isSelected ? 'موقعیت فعال' : 'انتخاب'}
+                  </span>
+                </div>
               </div>
             </div>
           );

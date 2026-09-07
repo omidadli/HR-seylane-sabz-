@@ -47,11 +47,16 @@ export enum PayrollStatus {
 }
 
 // ---------------- Module 1 Types ----------------
+export type ScoringMethod = 'WEIGHTED_AVG' | 'THRESHOLD_VETO' | 'GEOMETRIC_MEAN';
+export type AIRigor = 'STRICT' | 'BALANCED' | 'LENIENT';
+
 export interface JobCriteria {
   id: string;
   title: string;
   weight: number; // 1 to 100
   description?: string;
+  thresholdScore?: number; // Minimum passing score out of 10
+  isMandatory?: boolean; // If true and score < thresholdScore in THRESHOLD_VETO mode, triggers veto
 }
 
 export interface JobPosting {
@@ -66,6 +71,11 @@ export interface JobPosting {
   criteria: JobCriteria[];
   createdAtJalali: string;
   applicationsCount: number;
+  scoringMethod?: ScoringMethod;
+  aiRigor?: AIRigor;
+  interviewPriorityThreshold?: number;
+  initialRejectionThreshold?: number;
+  evaluationInstructions?: string;
 }
 
 export interface EmailDraft {
@@ -358,4 +368,116 @@ export interface HRAutomationTask {
   successCount?: number;
   badge: string;
 }
+
+// ---------------- Competitor Intelligence Types (HireVue, Eightfold AI, ZipRecruiter) ----------------
+
+// 1. HireVue On-Demand AI Video Interview & Assessment
+export interface VideoInterviewQuestion {
+  id: string;
+  questionText: string;
+  category: 'COMPETENCY' | 'SITUATIONAL' | 'TECHNICAL' | 'CULTURE_FIT';
+  maxDurationSeconds: number;
+  preparationSeconds: number;
+  rubricCriteria: string;
+}
+
+export interface VideoInterviewSubmission {
+  id: string;
+  candidateId: string;
+  candidateName: string;
+  jobId: string;
+  jobTitle: string;
+  brand: string;
+  submittedAtJalali: string;
+  status: 'COMPLETED' | 'PENDING_REVIEW' | 'IN_PROGRESS';
+  overallScore: number; // 0 - 100
+  confidenceScore: number; // 0 - 100
+  clarityScore: number; // 0 - 100
+  fairnessAuditScore: number; // 0 - 100 (Bias Mitigation Index)
+  answers: {
+    questionId: string;
+    questionText: string;
+    videoDurationSeconds: number;
+    transcript: string;
+    score: number; // 1 - 10
+    aiFeedback: string;
+    sentiment: 'POSITIVE' | 'NEUTRAL' | 'CONFIDENT';
+    keyCompetencies: string[];
+  }[];
+  aiRecommendation: 'STRONG_RECOMMEND' | 'RECOMMEND' | 'CONSIDER' | 'DECLINE';
+  summaryInsight: string;
+}
+
+// 2. Eightfold AI Talent Intelligence & Skill Graph
+export interface SkillGraphNode {
+  name: string;
+  level: 'ADVANCED' | 'INTERMEDIATE' | 'FOUNDATIONAL';
+  category: 'CORE_TECHNICAL' | 'MANAGERIAL' | 'CROSS_FUNCTIONAL' | 'COMPLIANCE';
+  isVerified: boolean;
+  adjacentSkills: string[];
+}
+
+export interface CandidateSkillMatch {
+  candidateId: string;
+  candidateName: string;
+  targetJobTitle: string;
+  brand: 'دافی' | 'کامان' | 'میس‌ویک' | 'کاپوت' | 'هلدینگ';
+  overallMatchPct: number; // 0 - 100
+  matchedSkills: string[];
+  learnableSkills30Days: string[]; // Skill Adjacent / Learnability
+  skillGap: string[];
+  trajectoryScore: number; // Career growth projection (0 - 100)
+  suggestedUpskillingCourses: string[];
+}
+
+export interface InternalMobilityMatch {
+  employeeId: string;
+  employeeName: string;
+  currentTitle: string;
+  currentDepartment: string;
+  currentBrand: 'دافی' | 'کامان' | 'میس‌ویک' | 'کاپوت';
+  targetJobId: string;
+  targetJobTitle: string;
+  readinessLevel: 'READY_NOW' | 'READY_IN_3_MONTHS' | 'DEVELOPMENT_NEEDED';
+  retentionImpact: 'CRITICAL_HIGH' | 'MODERATE' | 'STABLE';
+  internalMatchPct: number;
+  managerRecommendationNote: string;
+}
+
+// 3. ZipRecruiter Smart Sourcing & Syndication
+export interface SourcedCandidate {
+  id: string;
+  fullName: string;
+  currentRole: string;
+  currentCompany: string;
+  experienceYears: number;
+  matchScorePct: number;
+  location: string;
+  topSkills: string[];
+  status: 'RECOMMENDED' | 'INVITED' | 'ACCEPTED' | 'PASSED';
+  invitedAtJalali?: string;
+  lastActive: string;
+  avatarUrl: string;
+}
+
+export interface JobSyndicationChannel {
+  id: 'jobinja' | 'jobvision' | 'irantalent' | 'linkedin' | 'telegram_bale';
+  platformName: string;
+  platformLogo: string;
+  status: 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'PAUSED';
+  impressionsCount: number;
+  clicksCount: number;
+  applicationsReceived: number;
+  costToman: number;
+  lastSyncJalali: string;
+}
+
+export interface KnockoutQuestion {
+  id: string;
+  question: string;
+  requiredAnswer: boolean | string;
+  isDealBreaker: boolean;
+  explanation: string;
+}
+
 

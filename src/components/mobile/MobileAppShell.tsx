@@ -8,6 +8,7 @@ import {
   Bell,
   PhoneCall,
   Sparkles,
+  Laptop,
 } from 'lucide-react';
 import { MobileHome } from './MobileHome';
 import { MobileDepartments } from './MobileDepartments';
@@ -33,6 +34,7 @@ interface MobileAppShellProps {
   payrollSlips: PayrollSlip[];
   onRunAutomation: (taskId: string) => Promise<void>;
   onJobCreated?: (newJob: any) => void;
+  onExitToDesktop?: () => void;
 }
 
 export type MobileTab = 'home' | 'departments' | 'voice' | 'jobAd' | 'portal' | 'automations';
@@ -46,6 +48,7 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
   payrollSlips,
   onRunAutomation,
   onJobCreated,
+  onExitToDesktop,
 }) => {
   const [activeTab, setActiveTab] = useState<MobileTab>('home');
   const [notificationCount, setNotificationCount] = useState(3);
@@ -74,6 +77,17 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            {onExitToDesktop && (
+              <button
+                onClick={onExitToDesktop}
+                className="px-2.5 py-1.5 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-emerald-100 text-[11px] font-bold flex items-center gap-1 border border-emerald-700 transition-colors"
+                title="مشاهده نسخه جامع سازمانی هلدینگ"
+              >
+                <Laptop className="w-3.5 h-3.5 text-emerald-300" />
+                <span>نسخه جامع</span>
+              </button>
+            )}
+
             {/* Direct Voice Call Icon */}
             <button
               onClick={() => setActiveTab('voice')}

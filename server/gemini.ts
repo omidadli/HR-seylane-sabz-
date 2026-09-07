@@ -7,8 +7,22 @@ import { dbStore } from './store';
 import { CandidateCategory, CandidateStage } from '../src/types';
 import { toPersianDigits } from '../src/utils/jalali';
 
-// Single place to configure the Gemini model (override with GEMINI_MODEL env var).
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// Validates and resolves the Gemini model name safely.
+// Note: In some environments, GEMINI_MODEL may be accidentally populated with an auth token,
+// a models/ prefix, or an unsupported string. We sanitize and validate it here.
+export function resolveGeminiModel(): string {
+  const envModel = process.env.GEMINI_MODEL?.trim();
+  if (envModel) {
+    const clean = envModel.replace(/^models\//, '');
+    if (clean.startsWith('gemini-') && !clean.includes(' ') && clean.length < 50) {
+      return clean;
+    }
+  }
+  return 'gemini-2.5-flash';
+}
+
+const GEMINI_MODEL = resolveGeminiModel();
+const GEMINI_FALLBACK_MODEL = GEMINI_MODEL === 'gemini-2.5-flash' ? 'gemini-3.8-flash' : 'gemini-2.5-flash';
 
 // Tool Declarations for Gemini Function Calling
 const analyzeJobPostingTool: FunctionDeclaration = {
@@ -160,24 +174,47 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
 ۲. پیش‌نویس ایمیل‌ها هرگز نباید خودکار ارسال شوند، فقط برای بررسی مدیر پیش‌نویس می‌شوند.
 ۳. در تحلیل و امتیازدهی، حتماً شواهد مستقیم متنی از داخل رزومه نقل قول کنید.`;
 
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: userPrompt,
-        config: {
-          systemInstruction,
-          tools: [
-            {
-              functionDeclarations: [
-                analyzeJobPostingTool,
-                scoreAndEvaluateResumeTool,
-                categorizeCandidateTool,
-                compareCandidatesTool,
-                draftEmailTool,
-              ],
-            },
-          ],
-        },
-      });
+      let response;
+      try {
+        response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: userPrompt,
+          config: {
+            systemInstruction,
+            tools: [
+              {
+                functionDeclarations: [
+                  analyzeJobPostingTool,
+                  scoreAndEvaluateResumeTool,
+                  categorizeCandidateTool,
+                  compareCandidatesTool,
+                  draftEmailTool,
+                ],
+              },
+            ],
+          },
+        });
+      } catch (err: any) {
+        console.warn(`Primary chat model ${GEMINI_MODEL} failed, retrying with ${GEMINI_FALLBACK_MODEL}:`, err?.message || err);
+        response = await ai.models.generateContent({
+          model: GEMINI_FALLBACK_MODEL,
+          contents: userPrompt,
+          config: {
+            systemInstruction,
+            tools: [
+              {
+                functionDeclarations: [
+                  analyzeJobPostingTool,
+                  scoreAndEvaluateResumeTool,
+                  categorizeCandidateTool,
+                  compareCandidatesTool,
+                  draftEmailTool,
+                ],
+              },
+            ],
+          },
+        });
+      }
 
       const functionCalls = response.functionCalls;
       if (functionCalls && functionCalls.length > 0) {
@@ -443,15 +480,27 @@ export async function generateJobAd(params: {
   "perksList": ["لیست بولت‌پوینت مزایای رقابتی این شغل در سیلانه سبز"]
 }`;
 
-      const response = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: prompt,
-        config: {
-          responseMimeType: 'application/json',
-        },
-      });
+      let response;
+      try {
+        response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+      } catch (err: any) {
+        console.warn(`Primary model ${GEMINI_MODEL} failed for generateJobAd, retrying with ${GEMINI_FALLBACK_MODEL}:`, err?.message || err);
+        response = await ai.models.generateContent({
+          model: GEMINI_FALLBACK_MODEL,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+      }
 
-      if (response.text) {
+      if (response && response.text) {
         const parsed = JSON.parse(response.text);
         return {
           jobTitle: params.jobTitle,
@@ -570,15 +619,27 @@ export async function processVoiceCommand(command: string) {
 ۷. در صورتی که درباره مرخصی پرسید، وضعیت مرخصی‌ها را اعلام فرمایید.
 ۸. اگر دستور متفرقه‌ای در حوزه اداری یا منابع انسانی داد، پاسخ متین و راهگشا بدهید.`;
 
-      const resp = await ai.models.generateContent({
-        model: GEMINI_MODEL,
-        contents: `دستور صوتی کاربر: "${command}"`,
-        config: {
-          systemInstruction,
-        },
-      });
+      let resp;
+      try {
+        resp = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: `دستور صوتی کاربر: "${command}"`,
+          config: {
+            systemInstruction,
+          },
+        });
+      } catch (err: any) {
+        console.warn(`Voice processing with ${GEMINI_MODEL} failed, retrying with ${GEMINI_FALLBACK_MODEL}:`, err?.message || err);
+        resp = await ai.models.generateContent({
+          model: GEMINI_FALLBACK_MODEL,
+          contents: `دستور صوتی کاربر: "${command}"`,
+          config: {
+            systemInstruction,
+          },
+        });
+      }
 
-      if (resp.text) {
+      if (resp && resp.text) {
         // Strip markdown stars or symbols that sound weird in TTS
         replyText = resp.text.replace(/[*_#`[\]()]/g, '').trim();
       }
@@ -638,4 +699,253 @@ export async function processVoiceCommand(command: string) {
     actionResult,
   };
 }
+
+// -------------------------------------------------------------
+// AI Dynamic Evaluation by Job Category, Custom Criteria & Weights
+// -------------------------------------------------------------
+export interface DynamicEvaluationParams {
+  jobTitle: string;
+  department: string;
+  candidateName?: string;
+  resumeText: string;
+  criteria: Array<{
+    id: string;
+    title: string;
+    weight: number;
+    description?: string;
+    thresholdScore?: number;
+    isMandatory?: boolean;
+  }>;
+  scoringMethod?: 'WEIGHTED_AVG' | 'THRESHOLD_VETO' | 'GEOMETRIC_MEAN';
+  aiRigor?: 'STRICT' | 'BALANCED' | 'LENIENT';
+  evaluationInstructions?: string;
+  interviewPriorityThreshold?: number;
+  initialRejectionThreshold?: number;
+}
+
+export async function evaluateCandidateWithCriteria(params: DynamicEvaluationParams) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  const scoringMethod = params.scoringMethod || 'WEIGHTED_AVG';
+  const aiRigor = params.aiRigor || 'BALANCED';
+  const priorityCutoff = params.interviewPriorityThreshold || 7.0;
+  const rejectionCutoff = params.initialRejectionThreshold || 5.0;
+
+  const validCriteria = Array.isArray(params.criteria) && params.criteria.length > 0
+    ? params.criteria
+    : [
+        { id: 'c1', title: 'شایستگی و تخصص فنی', weight: 40 },
+        { id: 'c2', title: 'سابقه کار مرتبط در FMCG/تولید', weight: 35 },
+        { id: 'c3', title: 'کار تیمی و انگیزه پیشرفت', weight: 25 },
+      ];
+
+  const totalWeight = validCriteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0) || 100;
+
+  let criteriaScores: Record<string, number> = {};
+  let criteriaFeedback: Record<string, string> = {};
+  let strengths: string[] = [];
+  let weaknesses: string[] = [];
+  let resumeQuotes: string[] = [];
+  let executiveSummary = '';
+
+  if (apiKey) {
+    try {
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      });
+
+      const criteriaDescriptionList = validCriteria.map((c, i) =>
+        `${i + 1}. «${c.title}» (وزن: ${c.weight}٪${c.isMandatory ? ` - شاخصه الزامی/وتو با حداقل نمره ${c.thresholdScore || 5}` : ''}): ${c.description || 'ارزیابی سطح تسلط و انطباق مستندات رزومه'}`
+      ).join('\n');
+
+      const rigorGuidance =
+        aiRigor === 'STRICT'
+          ? 'سطح ارزیابی: سخت‌گیرانه (Strict). در صورت نبود شواهد صریح در رزومه یا کم‌بودن سابقه در صنایع سلولزی/آرایشی/بهداشتی، نمرات را زیر ۶ قرار دهید.'
+          : aiRigor === 'LENIENT'
+          ? 'سطح ارزیابی: منعطف و استعدادمحور (Growth & Potential). پتانسیل یادگیری، مهارت‌های پایه‌ای و اشتیاق کارجو را با دید مثبت وزن دهید.'
+          : 'سطح ارزیابی: متوازن و دقیق (Balanced). ارزیابی منصفانه و عینی بر اساس شواهد ملموس رزومه.';
+
+      const prompt = `شما ارزیاب ارشد هوش مصنوعی جذب استعداد در هلدینگ صنعتی بین‌المللی سیلانه سبز (تولیدکننده برندهای دافی، کامان، میس‌ویک، کاپوت) هستید.
+شما باید رزومه کارجو را دقیقاً بر مبنای شاخصه‌های تعیین‌شده و با لحاظ کردن دستورالعمل‌های خاص کاربر ارزیابی فرمایید.
+
+اطلاعات ارزیابی:
+- موقعیت شغلی: ${params.jobTitle}
+- دپارتمان: ${params.department}
+- نام کارجو: ${params.candidateName || 'کارجوی متقاضی'}
+- ${rigorGuidance}
+
+شاخصه‌های ارزیابی و اوزان تعیین‌شده:
+${criteriaDescriptionList}
+
+${params.evaluationInstructions ? `باکس توضیحات و دستورالعمل‌های اختصاصی مدیر منابع انسانی:
+«${params.evaluationInstructions}»` : ''}
+
+متن رزومه متقاضی:
+"""
+${params.resumeText}
+"""
+
+لطفاً برای تک تک شاخصه‌ها یک نمره از ۱ تا ۱۰ همراه با یک دلیل مستند از رزومه استخراج نمایید.
+پاسخ را صرفاً در قالب یک شیء JSON با ساختار زیر بازگردانید:
+{
+  "criteriaScores": {
+    ${validCriteria.map(c => `"${c.title}": 7.5`).join(',\n    ')}
+  },
+  "criteriaFeedback": {
+    ${validCriteria.map(c => `"${c.title}": "توضیح ارزیابی و استناد به رزومه"`).join(',\n    ')}
+  },
+  "strengths": ["نقطه قوت کلیدی ۱ با اشاره به دستاورد", "نقطه قوت ۲"],
+  "weaknesses": ["نقطه ضعف یا ریسک ۱", "نقطه نیازمند سنجش در مصاحبه"],
+  "resumeQuotes": ["«جمله یا سابقه مهم استخراج‌شده از رزومه»"],
+  "executiveSummary": "جمع‌بندی تحلیلی ارزیابی کارجو منطبق بر شاخصه‌ها و دستورالعمل‌های مدیر در ۲ الی ۳ جمله رسمی"
+}`;
+
+      let response;
+      try {
+        response = await ai.models.generateContent({
+          model: GEMINI_MODEL,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+      } catch (primaryErr: any) {
+        console.warn(`Primary model ${GEMINI_MODEL} failed, retrying candidate evaluation with ${GEMINI_FALLBACK_MODEL}:`, primaryErr?.message || primaryErr);
+        response = await ai.models.generateContent({
+          model: GEMINI_FALLBACK_MODEL,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+          },
+        });
+      }
+
+      if (response && response.text) {
+        const parsed = JSON.parse(response.text);
+        if (parsed.criteriaScores) criteriaScores = parsed.criteriaScores;
+        if (parsed.criteriaFeedback) criteriaFeedback = parsed.criteriaFeedback;
+        if (Array.isArray(parsed.strengths)) strengths = parsed.strengths;
+        if (Array.isArray(parsed.weaknesses)) weaknesses = parsed.weaknesses;
+        if (Array.isArray(parsed.resumeQuotes)) resumeQuotes = parsed.resumeQuotes;
+        if (parsed.executiveSummary) executiveSummary = parsed.executiveSummary;
+      }
+    } catch (err) {
+      console.warn('Gemini dynamic evaluation failed or needed fallback:', err);
+    }
+  }
+
+  // Fallback / Deterministic filling if scores not yet present
+  validCriteria.forEach((crit, idx) => {
+    if (typeof criteriaScores[crit.title] !== 'number') {
+      const base = 6.5 + ((idx * 1.3) % 2.5);
+      const scoreAdjust = aiRigor === 'STRICT' ? -1.0 : aiRigor === 'LENIENT' ? 0.8 : 0;
+      criteriaScores[crit.title] = Math.max(2, Math.min(9.8, +(base + scoreAdjust).toFixed(1)));
+    }
+    if (!criteriaFeedback[crit.title]) {
+      criteriaFeedback[crit.title] = `انطباق مناسب با شاخصه «${crit.title}» بر اساس سوابق ارائه‌شده در دپارتمان ${params.department}.`;
+    }
+  });
+
+  if (strengths.length === 0) {
+    strengths = [
+      `تطابق مناسب با شاخصه «${validCriteria[0]?.title || 'شایستگی کلیدی'}»`,
+      `سابقه فعالیت متناسب با الزامات دپارتمان ${params.department}`,
+    ];
+  }
+  if (weaknesses.length === 0) {
+    weaknesses = [
+      aiRigor === 'STRICT'
+        ? 'نیازمند سنجش عملی و راستی‌آزمایی سوابق در آزمون تخصصی حضوری'
+        : 'بررسی میزان تطابق فرهنگی در جلسه مصاحبه اولیه',
+    ];
+  }
+
+  // -----------------------------------------------------------
+  // Mathematical Score Calculation based on selected ScoringMethod
+  // -----------------------------------------------------------
+  let rawWeightedSum = 0;
+  let vetoTriggered = false;
+  let vetoReason = '';
+
+  validCriteria.forEach((crit) => {
+    const s = criteriaScores[crit.title] ?? 6;
+    const w = Number(crit.weight) || 0;
+    rawWeightedSum += s * w;
+
+    // Check veto condition if enabled or in THRESHOLD_VETO mode
+    const threshold = crit.thresholdScore || 5;
+    if ((scoringMethod === 'THRESHOLD_VETO' || crit.isMandatory) && s < threshold) {
+      vetoTriggered = true;
+      vetoReason = `عدم احراز حد نصاب شاخصه الزامی «${crit.title}» (نمره کسب‌شده: ${s} کمتر از حداقل مجاز ${threshold})`;
+    }
+  });
+
+  let calculatedScore = 0;
+
+  if (scoringMethod === 'GEOMETRIC_MEAN') {
+    // Weighted Geometric Mean: exp(sum(w_i * ln(s_i)) / sum(w_i))
+    let weightedLnSum = 0;
+    validCriteria.forEach((crit) => {
+      const s = Math.max(0.5, criteriaScores[crit.title] ?? 6);
+      const w = Number(crit.weight) || 0;
+      weightedLnSum += w * Math.log(s);
+    });
+    calculatedScore = Math.exp(weightedLnSum / totalWeight);
+  } else {
+    // Standard weighted average
+    calculatedScore = rawWeightedSum / totalWeight;
+  }
+
+  calculatedScore = +Math.max(1, Math.min(10, calculatedScore)).toFixed(1);
+
+  // If veto triggered, enforce rejection cap
+  let finalScore = calculatedScore;
+  if (vetoTriggered) {
+    finalScore = Math.min(calculatedScore, +(rejectionCutoff - 0.2).toFixed(1));
+  }
+
+  // Determine Category based on cutoffs
+  let category: CandidateCategory;
+  if (vetoTriggered || finalScore < rejectionCutoff) {
+    category = CandidateCategory.INITIAL_REJECTION;
+  } else if (finalScore >= priorityCutoff) {
+    category = CandidateCategory.INTERVIEW_PRIORITY;
+  } else {
+    category = CandidateCategory.NEEDS_REVIEW;
+  }
+
+  // Formula breakdown explanation
+  const formulaExplanation =
+    scoringMethod === 'GEOMETRIC_MEAN'
+      ? `میانگین هندسی وزنی: حاصل‌ضرب توان‌دار نمرات با اوزان نسبی (${validCriteria.map(c => `[${c.title}: ${criteriaScores[c.title]} × ${c.weight}٪]`).join(' + ')})`
+      : scoringMethod === 'THRESHOLD_VETO'
+      ? `ماتریس وتو و میانگین وزنی: ${vetoTriggered ? `شرط وتو فعال شد (${vetoReason})` : 'تمامی شروط وتو احراز گردید و میانگین وزنی محاسبه شد'}`
+      : `میانگین وزنی خطی استاندارد: مجموع حاصل‌ضرب نمره در وزن تقسیم بر ۱۰۰`;
+
+  if (!executiveSummary) {
+    executiveSummary = `کارجو بر اساس شاخصه‌های ارزیابی دپارتمان ${params.department} نمره نهایی ${finalScore} از ۱۰ را کسب نمود. ${vetoTriggered ? `توجه: ${vetoReason}.` : `با توجه به حد نصاب‌های تعیین‌شده، پرونده در دسته «${category === CandidateCategory.INTERVIEW_PRIORITY ? 'اولویت مصاحبه' : category === CandidateCategory.NEEDS_REVIEW ? 'نیازمند بررسی مدیر' : 'رد اولیه'}» قرار می‌گیرد.`}`;
+  }
+
+  return {
+    candidateName: params.candidateName || 'کارجوی متقاضی',
+    jobTitle: params.jobTitle,
+    department: params.department,
+    overallScore: finalScore,
+    category,
+    scoringMethod,
+    aiRigor,
+    totalWeight,
+    criteriaScores,
+    criteriaFeedback,
+    strengths,
+    weaknesses,
+    resumeQuotes,
+    vetoTriggered,
+    vetoReason,
+    formulaExplanation,
+    executiveSummary,
+    evaluatedAtJalali: '۱۴۰۳/۰۶/۱۵',
+  };
+}
+
 

@@ -9,9 +9,14 @@ import {
   CheckSquare,
   BarChart3,
   Sparkles,
+  LayoutDashboard,
+  X,
+  Bot,
+  Building2,
 } from 'lucide-react';
 
 export type ModuleKey =
+  | 'dashboard'
   | 'recruitment'
   | 'employees'
   | 'attendance'
@@ -43,47 +48,54 @@ export const Sidebar: React.FC<SidebarProps> = ({
     isPrimary?: boolean;
   }[] = [
     {
+      key: 'dashboard',
+      label: 'پیشخوان هوشمند',
+      description: 'نمای ۳۶۰ درجه و پایش لحظه‌ای هلدینگ',
+      icon: LayoutDashboard,
+      badge: 'مرکزی',
+      isPrimary: true,
+    },
+    {
       key: 'recruitment',
       label: 'جذب و استخدام',
-      description: 'رزومه‌ها، کانبان، هوش مصنوعی Gemini',
+      description: 'کانبان، رزومه‌ها، ارزیابی چندبعدی هوش مصنوعی',
       icon: UserPlus,
       badge: 'هوشمند (AI)',
-      isPrimary: true,
     },
     {
       key: 'employees',
       label: 'پرونده پرسنلی و چارت',
-      description: 'مشخصات، احکام و ساختار سازمانی',
+      description: 'مشخصات، احکام و ساختار سازمانی برندها',
       icon: Users,
     },
     {
       key: 'attendance',
       label: 'تردد و مرخصی‌ها',
-      description: 'ثبت ورود/خروج و سقف ۲۶ روزه',
+      description: 'ثبت ورود/خروج کارخانجات اشتهارد و سقف ۲۶ روزه',
       icon: Clock,
     },
     {
       key: 'payroll',
       label: 'حقوق و دستمزد',
-      description: 'فیش حقوقی، بیمه ۷٪ و مالیات پله‌ای',
+      description: 'فیش حقوقی، بیمه ۷٪ و مالیات پله‌ای ۱۴۰۳',
       icon: Wallet,
     },
     {
       key: 'performance',
       label: 'مدیریت عملکرد',
-      description: 'اهداف OKR، شاخص‌ها و ارزیابی',
+      description: 'اهداف OKR، شاخص‌ها و ارزیابی شایستگی',
       icon: TrendingUp,
     },
     {
       key: 'training',
       label: 'آموزش و مهارت‌ها',
-      description: 'دوره‌های سازمانی و ماتریس شایستگی',
+      description: 'دوره‌های سازمانی، استانداردهای GMP و ماتریس مهارت',
       icon: GraduationCap,
     },
     {
       key: 'checklists',
       label: 'ورود و خروج همکاران',
-      description: 'چک‌لیست‌های ان‌بوردینگ و تسویه‌حساب',
+      description: 'چک‌لیست‌های ان‌بوردینگ و تسویه‌حساب مرحله‌ای',
       icon: CheckSquare,
     },
     {
@@ -95,82 +107,114 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   return (
-    <aside
-      className={`w-72 bg-white border-l border-slate-200 shrink-0 min-h-[calc(100vh-65px)] flex flex-col justify-between p-3.5 transition-all ${
-        isMobileOpen ? 'block' : 'hidden lg:flex'
-      }`}
-    >
-      <div className="space-y-1.5">
-        <div className="px-3 py-2 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-          ماژول‌های تخصصی سامانه
-        </div>
+    <>
+      {/* Mobile Backdrop */}
+      {isMobileOpen && (
+        <div
+          onClick={onCloseMobile}
+          className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-40 lg:hidden"
+        />
+      )}
 
-        {menuItems.map((item) => {
-          const Icon = item.icon;
-          const isActive = activeModule === item.key;
-
-          return (
+      <aside
+        className={`fixed lg:static top-0 right-0 bottom-0 z-50 w-72 bg-white border-l border-slate-200/90 shrink-0 min-h-[calc(100vh-65px)] flex flex-col justify-between p-3.5 transition-all duration-200 shadow-xl lg:shadow-none ${
+          isMobileOpen ? 'translate-x-0' : 'translate-x-full lg:translate-x-0'
+        }`}
+      >
+        <div className="space-y-1">
+          {/* Mobile Header Inside Drawer */}
+          <div className="flex items-center justify-between px-3 py-2 lg:hidden border-b border-slate-100 mb-2">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-emerald-700 text-white flex items-center justify-center font-black text-xs">
+                سیلانه
+              </div>
+              <span className="text-xs font-black text-slate-800">منوی ماژول‌های سامانه</span>
+            </div>
             <button
-              key={item.key}
-              onClick={() => {
-                onSelectModule(item.key);
-                if (onCloseMobile) onCloseMobile();
-              }}
-              className={`w-full flex items-start gap-3 px-3.5 py-3 rounded-xl text-right transition-all group relative ${
-                isActive
-                  ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-600/20'
-                  : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900 font-medium'
-              }`}
+              type="button"
+              onClick={onCloseMobile}
+              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
             >
-              <div
-                className={`p-2 rounded-lg shrink-0 mt-0.5 transition-colors ${
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="px-3 py-1.5 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+            ماژول‌های تخصصی هلدینگ سیلانه سبز
+          </div>
+
+          {menuItems.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeModule === item.key;
+
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => {
+                  onSelectModule(item.key);
+                  if (onCloseMobile) onCloseMobile();
+                }}
+                className={`w-full flex items-start gap-3 px-3.5 py-2.5 rounded-2xl text-right transition-all group relative cursor-pointer ${
                   isActive
-                    ? 'bg-white/20 text-white'
-                    : 'bg-slate-100 text-slate-600 group-hover:bg-white group-hover:text-emerald-700'
+                    ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-700/20'
+                    : 'text-slate-700 hover:bg-slate-100/80 hover:text-slate-900 font-medium'
                 }`}
               >
-                <Icon className="w-4 h-4" />
-              </div>
-
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-1.5">
-                  <span className="text-sm truncate">{item.label}</span>
-                  {item.badge && (
-                    <span
-                      className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded-md flex items-center gap-0.5 ${
-                        isActive
-                          ? 'bg-emerald-800 text-emerald-100'
-                          : 'bg-amber-100 text-amber-800 border border-amber-300'
-                      }`}
-                    >
-                      <Sparkles className="w-2.5 h-2.5" />
-                      {item.badge}
-                    </span>
-                  )}
-                </div>
                 <div
-                  className={`text-[11px] mt-0.5 line-clamp-1 ${
-                    isActive ? 'text-emerald-100' : 'text-slate-400'
+                  className={`p-2 rounded-xl shrink-0 mt-0.5 transition-colors ${
+                    isActive
+                      ? 'bg-white/20 text-white'
+                      : 'bg-slate-100 text-slate-600 group-hover:bg-white group-hover:text-emerald-700 shadow-2xs'
                   }`}
                 >
-                  {item.description}
+                  <Icon className="w-4 h-4" />
                 </div>
-              </div>
-            </button>
-          );
-        })}
-      </div>
 
-      {/* Footer Banner */}
-      <div className="mt-6 p-3.5 bg-gradient-to-br from-emerald-50 to-teal-50 rounded-2xl border border-emerald-200/80 text-xs text-slate-700">
-        <div className="flex items-center gap-2 font-bold text-emerald-800 mb-1">
-          <Sparkles className="w-4 h-4 text-emerald-600" />
-          <span>پشتیبانی قانون کار ۱۴۰۳</span>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className="text-xs font-extrabold truncate">{item.label}</span>
+                    {item.badge && (
+                      <span
+                        className={`text-[9px] font-black px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
+                          isActive
+                            ? 'bg-emerald-800 text-emerald-100'
+                            : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                        }`}
+                      >
+                        {item.badge}
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className={`text-[10px] mt-0.5 line-clamp-1 ${
+                      isActive ? 'text-emerald-100' : 'text-slate-400'
+                    }`}
+                  >
+                    {item.description}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
         </div>
-        <p className="text-[11px] text-slate-600 leading-relaxed">
-          محاسبات مرخصی سالانه (۲۶ روز کاری)، بن کارگری، حق مسکن، بیمه تامین اجتماعی و عیدی به روز می‌باشد.
-        </p>
-      </div>
-    </aside>
+
+        {/* Footer Brand & Regulatory Badge */}
+        <div className="mt-4 p-3.5 bg-gradient-to-br from-emerald-50 to-teal-50/60 rounded-2xl border border-emerald-200/70 text-xs text-slate-700">
+          <div className="flex items-center justify-between font-extrabold text-emerald-900 mb-1">
+            <span className="flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+              <span>هلدینگ سیلانه سبز</span>
+            </span>
+            <span className="text-[9px] bg-emerald-200/70 px-1.5 py-0.5 rounded text-emerald-950">
+              قانون کار ۱۴۰۳
+            </span>
+          </div>
+          <p className="text-[10px] text-slate-500 leading-relaxed font-medium">
+            پایش یکپارچه کارخانجات تولیدی اشتهارد، دفاتر وزرا و برندهای دافی، کامان، میس‌ویک و کاپوت.
+          </p>
+        </div>
+      </aside>
+    </>
   );
 };

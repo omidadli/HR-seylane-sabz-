@@ -8,6 +8,10 @@ import { JobPostingsView } from './JobPostingsView';
 import { InterviewCalendarView } from './InterviewCalendarView';
 import { TalentPoolView } from './TalentPoolView';
 import { CandidateCompareModal } from './CandidateCompareModal';
+import { EvaluationCriteriaManager } from './EvaluationCriteriaManager';
+import { HireVueVideoStudio } from './HireVueVideoStudio';
+import { EightfoldTalentIntelligence } from './EightfoldTalentIntelligence';
+import { ZipRecruiterSmartSourcing } from './ZipRecruiterSmartSourcing';
 import {
   LayoutDashboard,
   Bot,
@@ -19,6 +23,10 @@ import {
   Users,
   CheckCircle2,
   Filter,
+  SlidersHorizontal,
+  Video,
+  Network,
+  Zap,
 } from 'lucide-react';
 
 interface RecruitmentModuleProps {
@@ -36,9 +44,19 @@ interface RecruitmentModuleProps {
   onCreateJob: (newJob: Partial<JobPosting>) => void;
   onBulkUploadSuccess: (data: any) => void;
   onDraftEmail: (candidate: Candidate, type: 'INVITATION' | 'REJECTION') => void;
+  onJobUpdated?: (updatedJob: JobPosting) => void;
 }
 
-export type RecruitmentTab = 'kanban' | 'ai_agent' | 'jobs' | 'interviews' | 'talent_pool';
+export type RecruitmentTab =
+  | 'kanban'
+  | 'hirevue_video'
+  | 'eightfold_skills'
+  | 'ziprecruiter_sourcing'
+  | 'ai_agent'
+  | 'evaluation_criteria'
+  | 'jobs'
+  | 'interviews'
+  | 'talent_pool';
 
 export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
   currentRole,
@@ -50,6 +68,7 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
   onCreateJob,
   onBulkUploadSuccess,
   onDraftEmail,
+  onJobUpdated,
 }) => {
   const [activeTab, setActiveTab] = useState<RecruitmentTab>('kanban');
   const [activeJobId, setActiveJobId] = useState<string>(jobs[0]?.id || 'job-1');
@@ -155,6 +174,57 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
             <span>پایپ‌لاین استخدامی (کانبان)</span>
           </button>
 
+          {/* Competitor 1: HireVue AI Video Studio */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('hirevue_video')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all relative ${
+              activeTab === 'hirevue_video'
+                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-sm'
+                : 'text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Video className="w-4 h-4 text-emerald-500" />
+            <span>مصاحبه ویدیویی هوشمند (HireVue)</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-black">
+              استودیو AI
+            </span>
+          </button>
+
+          {/* Competitor 2: Eightfold AI Deep Skill Graph & Internal Mobility */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('eightfold_skills')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all relative ${
+              activeTab === 'eightfold_skills'
+                ? 'bg-gradient-to-r from-teal-600 to-slate-800 text-white shadow-sm'
+                : 'text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Network className="w-4 h-4 text-teal-500" />
+            <span>گراف مهارت‌ها و ارتقای داخلی (Eightfold)</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-teal-100 text-teal-800 font-black">
+              هوش استعداد
+            </span>
+          </button>
+
+          {/* Competitor 3: ZipRecruiter Smart Sourcing & Syndication */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('ziprecruiter_sourcing')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all relative ${
+              activeTab === 'ziprecruiter_sourcing'
+                ? 'bg-gradient-to-r from-emerald-700 to-teal-800 text-white shadow-sm'
+                : 'text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
+            <span>جذب آنی و انتشار همزمان (ZipRecruiter)</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-900 font-black">
+              سورسینگ ۱ کلیک
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab('ai_agent')}
@@ -168,6 +238,22 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
             <span>دستیار هوشمند استخدام (Gemini)</span>
             <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-900 font-black">
               AI
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('evaluation_criteria')}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition-all relative ${
+              activeTab === 'evaluation_criteria'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            <SlidersHorizontal className="w-4 h-4 text-emerald-500" />
+            <span>ماتریس شاخص‌ها و وزن‌دهی AI</span>
+            <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-400 text-slate-900 font-black">
+              جدید
             </span>
           </button>
 
@@ -271,6 +357,30 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
           />
         )}
 
+        {/* Competitor 1: HireVue AI Video Studio */}
+        {activeTab === 'hirevue_video' && (
+          <HireVueVideoStudio
+            jobs={jobs}
+            activeJobId={activeJobId}
+          />
+        )}
+
+        {/* Competitor 2: Eightfold AI Talent Intelligence & Skill Graph */}
+        {activeTab === 'eightfold_skills' && (
+          <EightfoldTalentIntelligence
+            jobs={jobs}
+            activeJobId={activeJobId}
+          />
+        )}
+
+        {/* Competitor 3: ZipRecruiter Smart Sourcing & Syndication */}
+        {activeTab === 'ziprecruiter_sourcing' && (
+          <ZipRecruiterSmartSourcing
+            jobs={jobs}
+            activeJobId={activeJobId}
+          />
+        )}
+
         {activeTab === 'ai_agent' && (
           <AIAgentChat
             candidates={candidates}
@@ -278,6 +388,17 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
             activeJobId={activeJobId}
             onApproveEmailDraft={(draft) => {
               alert(`پیش‌نویس ایمیل برای ${draft.candidateName} تایید و در کارتابل ذخیره شد.`);
+            }}
+          />
+        )}
+
+        {activeTab === 'evaluation_criteria' && (
+          <EvaluationCriteriaManager
+            jobs={jobs}
+            activeJobId={activeJobId}
+            onSelectJob={(id) => setActiveJobId(id)}
+            onJobUpdated={(updatedJob) => {
+              if (onJobUpdated) onJobUpdated(updatedJob);
             }}
           />
         )}
@@ -291,6 +412,10 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
               setActiveTab('kanban');
             }}
             onCreateJob={onCreateJob}
+            onConfigureCriteria={(id) => {
+              setActiveJobId(id);
+              setActiveTab('evaluation_criteria');
+            }}
           />
         )}
 
@@ -322,6 +447,9 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
         activeJobId={activeJobId}
         onUploadComplete={(result) => {
           onBulkUploadSuccess(result);
+        }}
+        onJobCreated={(newJob) => {
+          onCreateJob(newJob);
         }}
       />
 

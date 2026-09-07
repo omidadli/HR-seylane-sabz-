@@ -141,8 +141,8 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
           </div>
 
           {/* Employees Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-x-auto">
-            <table className="w-full text-right text-xs">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-x-auto touch-scroll">
+            <table className="w-full min-w-[680px] text-right text-xs">
               <thead className="bg-slate-50 text-slate-700 font-bold border-b border-slate-200">
                 <tr>
                   <th className="p-3.5">نام و نام خانوادگی</th>

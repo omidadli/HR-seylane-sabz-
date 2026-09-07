@@ -8,7 +8,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { dbStore } from './server/store';
-import { processAgentChat, generateJobAd, processVoiceCommand } from './server/gemini';
+import { processAgentChat, generateJobAd, processVoiceCommand, evaluateCandidateWithCriteria } from './server/gemini';
 import {
   CandidateCategory,
   CandidateStage,
@@ -94,6 +94,104 @@ async function startServer() {
     res.status(201).json(newJob);
   });
 
+  // Update evaluation criteria, weights, calculation method and instructions for a specific job
+  app.put('/api/jobs/:id/criteria', (req, res) => {
+    const { id } = req.params;
+    const {
+      criteria,
+      scoringMethod,
+      aiRigor,
+      evaluationInstructions,
+      interviewPriorityThreshold,
+      initialRejectionThreshold,
+    } = req.body;
+
+    const job = dbStore.jobs.find(j => j.id === id);
+    if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
+
+    if (Array.isArray(criteria)) {
+      job.criteria = criteria;
+    }
+    if (scoringMethod) job.scoringMethod = scoringMethod;
+    if (aiRigor) job.aiRigor = aiRigor;
+    if (evaluationInstructions !== undefined) job.evaluationInstructions = evaluationInstructions;
+    if (typeof interviewPriorityThreshold === 'number') {
+      job.interviewPriorityThreshold = interviewPriorityThreshold;
+    }
+    if (typeof initialRejectionThreshold === 'number') {
+      job.initialRejectionThreshold = initialRejectionThreshold;
+    }
+
+    res.json({
+      success: true,
+      message: 'شاخصه‌ها، وزن‌دهی و متد ارزیابی هوش مصنوعی با موفقیت بروزرسانی شد',
+      job,
+    });
+  });
+
+  // Dynamic AI evaluation of a candidate resume against job criteria
+  app.post('/api/jobs/evaluate-candidate', async (req, res) => {
+    try {
+      const {
+        candidateId,
+        jobId,
+        jobTitle,
+        department,
+        candidateName,
+        resumeText,
+        criteria,
+        scoringMethod,
+        aiRigor,
+        evaluationInstructions,
+        interviewPriorityThreshold,
+        initialRejectionThreshold,
+        saveCandidateResult,
+      } = req.body;
+
+      let targetJob = dbStore.jobs.find(j => j.id === jobId);
+      let targetCandidate = candidateId ? dbStore.candidates.find(c => c.id === candidateId) : null;
+
+      const evalJobTitle = jobTitle || targetJob?.title || 'موقعیت شغلی سازمانی';
+      const evalDepartment = department || targetJob?.department || 'منابع انسانی';
+      const evalCandidateName = candidateName || targetCandidate?.fullName || 'کارجوی متقاضی';
+      const evalResumeText = resumeText || targetCandidate?.resumeText || 'متن رزومه برای ارزیابی';
+      const evalCriteria = criteria || targetJob?.criteria || [];
+      const evalScoringMethod = scoringMethod || targetJob?.scoringMethod || 'WEIGHTED_AVG';
+      const evalAiRigor = aiRigor || targetJob?.aiRigor || 'BALANCED';
+      const evalInstructions = evaluationInstructions ?? targetJob?.evaluationInstructions;
+      const evalPriority = interviewPriorityThreshold ?? targetJob?.interviewPriorityThreshold ?? 7.0;
+      const evalRejection = initialRejectionThreshold ?? targetJob?.initialRejectionThreshold ?? 5.0;
+
+      const result = await evaluateCandidateWithCriteria({
+        jobTitle: evalJobTitle,
+        department: evalDepartment,
+        candidateName: evalCandidateName,
+        resumeText: evalResumeText,
+        criteria: evalCriteria,
+        scoringMethod: evalScoringMethod,
+        aiRigor: evalAiRigor,
+        evaluationInstructions: evalInstructions,
+        interviewPriorityThreshold: evalPriority,
+        initialRejectionThreshold: evalRejection,
+      });
+
+      // If requested, update candidate in store
+      if (saveCandidateResult && targetCandidate) {
+        targetCandidate.overallScore = result.overallScore;
+        targetCandidate.category = result.category;
+        targetCandidate.criteriaScores = result.criteriaScores;
+        targetCandidate.strengths = result.strengths;
+        targetCandidate.weaknesses = result.weaknesses;
+        targetCandidate.resumeQuotes = result.resumeQuotes;
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error('Error evaluating candidate with criteria:', err);
+      res.status(500).json({ error: 'خطا در انجام ارزیابی هوش مصنوعی', details: err.message });
+    }
+  });
+
   app.get('/api/candidates', (req, res) => {
     const { jobId, stage, category, talentPool } = req.query;
     let list = [...dbStore.candidates];
@@ -177,45 +275,98 @@ async function startServer() {
 
   // Bulk resume upload processing (simulates 200+ resumes real-time processing)
   app.post('/api/candidates/bulk-upload', (req, res) => {
-    const { filesCount, jobId } = req.body;
+    const { filesCount, jobId, files, mode } = req.body;
     const targetJob = dbStore.jobs.find(j => j.id === jobId) || dbStore.jobs[0];
-    const totalFiles = Math.max(10, Math.min(filesCount || 200, 250));
+    const uploadedFiles: Array<{ name: string; size?: number; text?: string; sourceZip?: string }> =
+      Array.isArray(files) && files.length > 0 ? files : [];
 
-    const iranianFirstNames = ['سینا', 'الناز', 'پویان', 'بهار', 'حامد', 'رکسانا', 'فرزاد', 'سوگند', 'مهراد', 'یاسمین', 'آرش', 'ترانه', 'نوید', 'مینا'];
-    const iranianLastNames = ['کاظمی', 'رحیمی', 'طاهری', 'غفاری', 'صادقی', 'حسینی', 'میرزایی', 'کریمی', 'افشار', 'نوری', 'باقری', 'شریفی'];
+    const totalFiles =
+      uploadedFiles.length > 0 && (mode === 'exact' || !filesCount)
+        ? uploadedFiles.length
+        : Math.max(uploadedFiles.length || 1, Math.min(filesCount || (uploadedFiles.length ? uploadedFiles.length : 200), 250));
+
+    const iranianFirstNames = ['سینا', 'الناز', 'پویان', 'بهار', 'حامد', 'رکسانا', 'فرزاد', 'سوگند', 'مهراد', 'یاسمین', 'آرش', 'ترانه', 'نوید', 'مینا', 'سارا', 'کیوان', 'نیما', 'پریسا'];
+    const iranianLastNames = ['کاظمی', 'رحیمی', 'طاهری', 'غفاری', 'صادقی', 'حسینی', 'میرزایی', 'کریمی', 'افشار', 'نوری', 'باقری', 'شریفی', 'یزدانی', 'موسوی'];
+
+    const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
+      // Clean extensions and common prefixes
+      let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
+      clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
+      clean = clean.replace(/[\-_]/g, ' ').trim();
+      // If contains at least 3 characters and is meaningful, use it
+      if (clean.length >= 3 && !/^\d+$/.test(clean)) {
+        return clean;
+      }
+      const fn = iranianFirstNames[(index + Math.floor(Math.random() * 5)) % iranianFirstNames.length];
+      const ln = iranianLastNames[(index + Math.floor(Math.random() * 5)) % iranianLastNames.length];
+      return `${fn} ${ln}`;
+    };
 
     const newCandidatesBatch = [];
     for (let i = 0; i < totalFiles; i++) {
-      const fn = iranianFirstNames[Math.floor(Math.random() * iranianFirstNames.length)];
-      const ln = iranianLastNames[Math.floor(Math.random() * iranianLastNames.length)];
-      const fullName = `${fn} ${ln}`;
+      const isRealFile = i < uploadedFiles.length;
+      const uploadedFile = isRealFile ? uploadedFiles[i] : null;
+
+      let fullName: string;
+      let resumeFileName: string;
+      let resumeText: string;
+
+      if (uploadedFile) {
+        resumeFileName = uploadedFile.name;
+        fullName = extractCandidateNameFromFilename(uploadedFile.name, i);
+        resumeText = uploadedFile.text || `رزومه استخراج‌شده از سامانه جذب هلدینگ سیلانه سبز. متقاضی موقعیت ${targetJob.title} در دپارتمان ${targetJob.department}. سوابق مرتبط و تحصیلات تخصصی.`;
+      } else {
+        const fn = iranianFirstNames[Math.floor(Math.random() * iranianFirstNames.length)];
+        const ln = iranianLastNames[Math.floor(Math.random() * iranianLastNames.length)];
+        fullName = `${fn} ${ln}`;
+        resumeFileName = `Resume_${fullName.replace(/\s+/g, '_')}.pdf`;
+        resumeText = `فارغ‌التحصیل رشته مهندسی، سابقه کار مرتبط در صنایع سلولزی و FMCG، آشنا با فرایندهای سازمان.`;
+      }
+
       const score = +(4 + Math.random() * 5.8).toFixed(1);
 
       let category = CandidateCategory.NEEDS_REVIEW;
       if (score >= 7.0) category = CandidateCategory.INTERVIEW_PRIORITY;
       else if (score < 5.0) category = CandidateCategory.INITIAL_REJECTION;
 
+      // Extract criteria scores matching the target job
+      const criteriaScores: Record<string, number> = {};
+      if (targetJob.criteria && targetJob.criteria.length > 0) {
+        targetJob.criteria.forEach((crit) => {
+          criteriaScores[crit.title] = Math.min(10, +(score * (0.85 + Math.random() * 0.3)).toFixed(1));
+        });
+      } else {
+        criteriaScores['شایستگی تخصصی'] = Math.min(10, +(score * 0.95).toFixed(1));
+        criteriaScores['سابقه کار مرتبط'] = Math.min(10, +(score * 0.9).toFixed(1));
+        criteriaScores['کار تیمی و انگیزه'] = Math.min(10, +(score * 1.0).toFixed(1));
+      }
+
+      const fnPart = fullName.split(' ')[0] || 'applicant';
+      const lnPart = fullName.split(' ')[1] || 'resume';
+
       const cand = {
         id: `cand-bulk-${Date.now()}-${i}`,
         jobId: targetJob.id,
         jobTitle: targetJob.title,
         fullName,
-        email: `${latinName(fn, 'applicant')}.${latinName(ln, 'resume')}.${Date.now().toString(36)}${i}@example.com`,
+        email: `${latinName(fnPart, 'applicant')}.${latinName(lnPart, 'seilaneh')}.${Date.now().toString(36)}${i}@example.com`,
         phone: `0912${Math.floor(1000000 + Math.random() * 9000000)}`,
-        resumeFileName: `Resume_${fullName.replace(' ', '_')}.pdf`,
-        resumeText: `فارغ‌التحصیل رشته مهندسی، سابقه کار مرتبط در استارتاپ‌ها، آشنا با اصول نرم‌افزار.`,
+        resumeFileName,
+        resumeText,
         overallScore: score,
         category,
         stage: category === CandidateCategory.INTERVIEW_PRIORITY ? CandidateStage.INITIAL_SCREENING : (category === CandidateCategory.INITIAL_REJECTION ? CandidateStage.REJECTED : CandidateStage.INITIAL_SCREENING),
-        strengths: [`تسلط بر مفاهیم پایه با امتیاز ارزیابی ${score}`],
-        weaknesses: [score < 7 ? 'نیاز به سنجش سطح کدنویسی در مصاحبه تلفنی' : 'نیاز به مصاحبه نهایی فرهنگی'],
-        resumeQuotes: ['«سابقه در پروژه‌های تیمی و مشارکت در اسپرینت‌های اسکرام»'],
-        criteriaScores: {
-          'تسلط فنی': Math.min(10, +(score * (0.9 + Math.random() * 0.2)).toFixed(1)),
-          'تایپ‌اسکریپت': Math.min(10, +(score * (0.85 + Math.random() * 0.25)).toFixed(1)),
-          'طراحی RTL': Math.min(10, +(score * (0.95 + Math.random() * 0.1)).toFixed(1)),
-          'کار تیمی': Math.min(10, +(score * (0.9 + Math.random() * 0.15)).toFixed(1)),
-        },
+        strengths: [
+          `تطابق با الزامات موقعیت ${targetJob.title} با امتیاز شایستگی ${score}`,
+          `تسلط بر مهارت‌های موردنیاز دپارتمان ${targetJob.department}`,
+        ],
+        weaknesses: [
+          score < 7 ? 'نیاز به سنجش سطح عملکردی در مصاحبه تلفنی اولیه' : 'نیاز به ارزیابی نهایی در جلسه حضوری با سرپرست واحد',
+        ],
+        resumeQuotes: [
+          uploadedFile?.sourceZip ? `«مستخرج از آرشیو ${uploadedFile.sourceZip}»` : '«سابقه فعالیت در پروژه‌های تیمی مرتبط با FMCG و استانداردهای کیفی»',
+        ],
+        criteriaScores,
         inTalentPool: category === CandidateCategory.INITIAL_REJECTION && score >= 4.5,
         appliedAtJalali: '۱۴۰۳/۰۶/۱۵',
       };
@@ -261,6 +412,113 @@ async function startServer() {
       console.error('Agent chat error:', err);
       res.status(500).json({ error: 'خطا در برقراری ارتباط با دستیار هوشمند استخدام' });
     }
+  });
+
+  // -------------------------------------------------------------
+  // Competitor Intelligence Endpoints (HireVue, Eightfold AI, ZipRecruiter)
+  // -------------------------------------------------------------
+  // 1. HireVue: Video Interviews & Rubrics
+  app.get('/api/competitor/hirevue/submissions', (req, res) => {
+    res.json(dbStore.videoSubmissions);
+  });
+
+  app.get('/api/competitor/hirevue/questions', (req, res) => {
+    res.json(dbStore.videoQuestions);
+  });
+
+  app.post('/api/competitor/hirevue/evaluate-submission', (req, res) => {
+    const { candidateName, jobTitle, brand, simulatedTranscript } = req.body;
+    const newSubmission = {
+      id: `vis-${Date.now()}`,
+      candidateId: `cand-${Date.now()}`,
+      candidateName: candidateName || 'کارجوی متقاضی',
+      jobId: 'job-1',
+      jobTitle: jobTitle || 'کارشناس ارشد سازمان',
+      brand: brand || 'هلدینگ سیلانه سبز',
+      submittedAtJalali: 'امروز - لحظاتی پیش',
+      status: 'COMPLETED' as const,
+      overallScore: Math.floor(82 + Math.random() * 16),
+      confidenceScore: Math.floor(80 + Math.random() * 18),
+      clarityScore: Math.floor(85 + Math.random() * 14),
+      fairnessAuditScore: 99,
+      aiRecommendation: 'STRONG_RECOMMEND' as const,
+      summaryInsight: 'تحلیل صوتی و متنی هوش مصنوعی: بیان مسلط، رعایت چارچوب پاسخگویی موثر، تمرکز بر صلاحیت‌های فنی و انطباق کامل با موازین جذب عادلانه و بدون تعصب.',
+      answers: [
+        {
+          questionId: 'vq-new-1',
+          questionText: 'پاسخ ارائه‌شده در شبیه‌ساز مصاحبه ویدیویی آنلاین هوش مصنوعی',
+          videoDurationSeconds: 105,
+          transcript: simulatedTranscript || 'من با تکیه بر تجربیات چندساله در مدیریت فرایندها و روحیه کار تیمی در خطوط تولید و ستاد، آمادگی ارتقای بهره‌وری در هلدینگ سیلانه سبز را دارم.',
+          score: 9.1,
+          sentiment: 'CONFIDENT' as const,
+          aiFeedback: 'اعتمادبه‌نفس بالا در گفتار، رعایت ترتیب منطقی و اشاره به سنجه‌های ملموس عملکردی.',
+          keyCompetencies: ['حل مسئله', 'ارتباطات حرفه‌ای', 'انگیزش شغلی'],
+        },
+      ],
+    };
+    dbStore.videoSubmissions.unshift(newSubmission);
+    res.status(201).json(newSubmission);
+  });
+
+  // 2. Eightfold AI: Skill Graph & Internal Talent Mobility
+  app.get('/api/competitor/eightfold/skills', (req, res) => {
+    res.json(dbStore.candidateSkillMatches);
+  });
+
+  app.get('/api/competitor/eightfold/internal-mobility', (req, res) => {
+    res.json(dbStore.internalMobilityMatches);
+  });
+
+  // 3. ZipRecruiter: Smart Sourcing & Multi-Channel Syndication
+  app.get('/api/competitor/ziprecruiter/sourced-candidates', (req, res) => {
+    res.json(dbStore.sourcedCandidates);
+  });
+
+  app.post('/api/competitor/ziprecruiter/invite', (req, res) => {
+    const { candidateId } = req.body;
+    const target = dbStore.sourcedCandidates.find(c => c.id === candidateId);
+    if (target) {
+      target.status = 'INVITED';
+      target.invitedAtJalali = 'امروز - لحظاتی پیش';
+      res.json({ success: true, candidate: target });
+    } else {
+      res.status(404).json({ error: 'کارجوی سورس‌شده یافت نشد' });
+    }
+  });
+
+  app.get('/api/competitor/ziprecruiter/syndication', (req, res) => {
+    res.json(dbStore.syndicationChannels);
+  });
+
+  app.post('/api/competitor/ziprecruiter/toggle-syndication', (req, res) => {
+    const { channelId, status } = req.body;
+    const channel = dbStore.syndicationChannels.find(c => c.id === channelId);
+    if (channel) {
+      channel.status = status;
+      channel.lastSyncJalali = 'امروز - لحظاتی پیش';
+      if (status === 'ACTIVE') {
+        channel.impressionsCount += Math.floor(100 + Math.random() * 300);
+      }
+      res.json({ success: true, channel });
+    } else {
+      res.status(404).json({ error: 'کانال انتشار یافت نشد' });
+    }
+  });
+
+  app.get('/api/competitor/ziprecruiter/knockout-questions', (req, res) => {
+    res.json(dbStore.knockoutQuestions);
+  });
+
+  app.post('/api/competitor/ziprecruiter/knockout-questions', (req, res) => {
+    const newKq = {
+      id: `kq-${Date.now()}`,
+      question: req.body.question || 'سوال حذفی جدید',
+      requiredAnswer: req.body.requiredAnswer ?? true,
+      isDealBreaker: req.body.isDealBreaker ?? true,
+      explanation: req.body.explanation || 'الزام فرآیندی کارخانجات سیلانه سبز',
+    };
+    dbStore.knockoutQuestions.push(newKq);
+    res.status(201).json(newKq);
   });
 
   // -------------------------------------------------------------

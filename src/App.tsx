@@ -22,6 +22,7 @@ import {
 } from './types';
 import { Header } from './components/common/Header';
 import { Sidebar, ModuleKey } from './components/common/Sidebar';
+import { ExecutiveDashboard } from './components/dashboard/ExecutiveDashboard';
 import { RecruitmentModule } from './components/recruitment/RecruitmentModule';
 import { EmployeesModule } from './components/employees/EmployeesModule';
 import { AttendanceModule } from './components/attendance/AttendanceModule';
@@ -33,40 +34,22 @@ import { AnalyticsModule } from './components/analytics/AnalyticsModule';
 import { MobileAppShell } from './components/mobile/MobileAppShell';
 import { MobileVoiceCall } from './components/mobile/MobileVoiceCall';
 import { MobileJobAdGenerator } from './components/mobile/MobileJobAdGenerator';
+import { CommandPalette } from './components/common/CommandPalette';
+import { FloatingQuickActions } from './components/common/FloatingQuickActions';
+import { BottomNav } from './components/common/BottomNav';
+import { Breadcrumbs } from './components/common/Breadcrumbs';
+import { ToastContainer, showToast } from './components/common/Toast';
 import { Menu, X, Loader2 } from 'lucide-react';
 
 export default function App() {
-  const [isMobileScreen, setIsMobileScreen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    const isStandalone =
-      window.matchMedia('(display-mode: standalone)').matches ||
-      (window.navigator as any).standalone;
-    if (isStandalone) return true;
-    return window.innerWidth < 1024;
-  });
-
   const [currentRole, setCurrentRole] = useState<UserRole>(UserRole.HR_DIRECTOR);
-  const [activeModule, setActiveModule] = useState<ModuleKey>('recruitment');
+  const [activeModule, setActiveModule] = useState<ModuleKey>('dashboard');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
   const [isJobAdModalOpen, setIsJobAdModalOpen] = useState(false);
-
-  useEffect(() => {
-    const handleResize = () => {
-      const isStandalone =
-        window.matchMedia('(display-mode: standalone)').matches ||
-        (window.navigator as any).standalone;
-      if (isStandalone) {
-        setIsMobileScreen(true);
-      } else {
-        setIsMobileScreen(window.innerWidth < 1024);
-      }
-    };
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isPwaPortalMode, setIsPwaPortalMode] = useState(false);
 
   // Application Data States
   const [departments, setDepartments] = useState<HoldingDepartment[]>([]);
@@ -90,6 +73,13 @@ export default function App() {
     averageTimeToHireDays: 14,
     monthlyPayrollTotalToman: 42500000000,
   });
+
+  // Listen to open-command-palette global trigger
+  useEffect(() => {
+    const handleOpenCommandPalette = () => setIsCommandPaletteOpen(true);
+    window.addEventListener('open-command-palette', handleOpenCommandPalette);
+    return () => window.removeEventListener('open-command-palette', handleOpenCommandPalette);
+  }, []);
 
   // Fetch initial data from Express backend
   const fetchData = async () => {
@@ -138,38 +128,30 @@ export default function App() {
       if (deptsRes) setDepartments(deptsRes);
       if (autoTasksRes) setAutomationTasks(autoTasksRes);
     } catch (err) {
-      console.error('Error fetching data from server:', err);
+      console.error('Failed to fetch HR data:', err);
+      showToast('خطا در بارگذاری اولیه اطلاعات سازمانی', 'error');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleRunAutomation = async (taskId: string) => {
+  const handleRunAutomation = async (taskIdOrCategory: string) => {
     try {
       const res = await fetch('/api/automation/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId }),
+        body: JSON.stringify({ taskId: taskIdOrCategory }),
       });
       const data = await res.json();
-      if (data.success) {
+      if (data.task) {
         setAutomationTasks((prev) =>
-          prev.map((t) =>
-            t.id === taskId
-              ? { ...t, status: 'COMPLETED', lastRunJalali: 'امروز - لحظاتی پیش' }
-              : t
-          )
+          prev.map((t) => (t.id === data.task.id ? data.task : t))
         );
-        // Refresh updated leaves or payroll
-        const [leaveRes, payrollRes] = await Promise.all([
-          fetch('/api/leave/requests').then((r) => r.json()),
-          fetch('/api/payroll/slips').then((r) => r.json()),
-        ]);
-        if (leaveRes) setLeaveRequests(leaveRes);
-        if (payrollRes) setPayrollSlips(payrollRes);
+        showToast(`فرآیند اتوماسیون با موفقیت اجرا شد: ${data.task.title}`, 'success');
       }
     } catch (err) {
       console.error('Automation run error:', err);
+      showToast('خطا در اجرای اتوماسیون', 'error');
     }
   };
 
@@ -186,6 +168,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: newRole }),
       });
+      showToast(`نقش کاربری به «${newRole}» تغییر یافت`, 'info');
     } catch (err) {
       console.error(err);
     }
@@ -193,7 +176,6 @@ export default function App() {
 
   // Module 1: Recruitment handlers
   const handleUpdateCandidateStage = async (candidateId: string, nextStage: CandidateStage) => {
-    // Optimistic UI update
     setCandidates((prev) =>
       prev.map((c) => (c.id === candidateId ? { ...c, stage: nextStage } : c))
     );
@@ -203,8 +185,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stage: nextStage }),
       });
+      showToast('مرحله کارجو با موفقیت در کانبان به‌روزرسانی شد', 'success');
     } catch (err) {
       console.error(err);
+      showToast('خطا در به‌روزرسانی مرحله کارجو', 'error');
     }
   };
 
@@ -233,8 +217,10 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ interviewJalali, interviewType, interviewNotes: notes }),
       });
+      showToast('مصاحبه تخصصی حضوری با موفقیت تنظیم شد', 'success');
     } catch (err) {
       console.error(err);
+      showToast('خطا در تنظیم مصاحبه', 'error');
     }
   };
 
@@ -248,6 +234,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ inTalentPool: inPool }),
       });
+      showToast(inPool ? 'کارجو به استخر استعدادها اضافه شد' : 'کارجو از استخر استعدادها خارج شد', 'info');
     } catch (err) {
       console.error(err);
     }
@@ -262,13 +249,16 @@ export default function App() {
       });
       const created = await res.json();
       setJobs((prev) => [created, ...prev]);
+      showToast(`موقعیت شغلی «${created.title}» با موفقیت افزوده شد`, 'success');
     } catch (err) {
       console.error(err);
+      showToast('خطا در ثبت موقعیت شغلی', 'error');
     }
   };
 
-  const handleBulkUploadSuccess = (result: any) => {
-    fetchData(); // Refresh candidates and jobs count
+  const handleBulkUploadSuccess = () => {
+    fetchData();
+    showToast('بارگذاری گروهی رزومه‌ها با موفقیت انجام شد', 'success');
   };
 
   const handleDraftEmail = async (candidate: Candidate, type: 'INVITATION' | 'REJECTION') => {
@@ -288,7 +278,10 @@ export default function App() {
         body: JSON.stringify({ type, subject, body }),
       });
 
-      alert(`پیش‌نویس ایمیل ${type === 'INVITATION' ? 'دعوت به مصاحبه' : 'عدم احراز'} برای ${candidate.fullName} در کارتابل پیش‌نویس‌ها ذخیره شد (عدم ارسال خودکار).`);
+      showToast(
+        `پیش‌نویس ایمیل ${type === 'INVITATION' ? 'دعوت به مصاحبه' : 'عدم احراز'} برای ${candidate.fullName} ذخیره شد`,
+        'info'
+      );
     } catch (err) {
       console.error(err);
     }
@@ -304,8 +297,10 @@ export default function App() {
       });
       const created = await res.json();
       setEmployees((prev) => [...prev, created]);
+      showToast(`پرونده پرسنلی همکار جدید «${created.fullName}» ثبت گردید`, 'success');
     } catch (err) {
       console.error(err);
+      showToast('خطا در ایجاد پرونده پرسنلی', 'error');
     }
   };
 
@@ -330,9 +325,10 @@ export default function App() {
         }
         return [updated, ...prev];
       });
-      alert(type === 'CHECK_IN' ? 'ورود شما در ساعت جاری با موفقیت ثبت شد.' : 'خروج شما با موفقیت ثبت شد.');
+      showToast(type === 'CHECK_IN' ? 'ورود شما در ساعت جاری با موفقیت ثبت شد.' : 'خروج شما با موفقیت ثبت شد.', 'success');
     } catch (err) {
       console.error(err);
+      showToast('خطا در ثبت تردد', 'error');
     }
   };
 
@@ -348,8 +344,10 @@ export default function App() {
       });
       const created = await res.json();
       setLeaveRequests((prev) => [created, ...prev]);
+      showToast('درخواست مرخصی با موفقیت ارسال شد و در کارتابل بررسی قرار گرفت', 'success');
     } catch (err) {
       console.error(err);
+      showToast('خطا در ثبت درخواست مرخصی', 'error');
     }
   };
 
@@ -362,6 +360,7 @@ export default function App() {
       });
       const updated = await res.json();
       setLeaveRequests((prev) => prev.map((l) => (l.id === id ? updated : l)));
+      showToast(approved ? 'درخواست مرخصی تأیید شد' : 'درخواست مرخصی رد گردید', 'info');
     } catch (err) {
       console.error(err);
     }
@@ -376,9 +375,13 @@ export default function App() {
         body: JSON.stringify({ monthJalali, yearJalali }),
       });
       const data = await res.json();
-      if (data.slips) setPayrollSlips(data.slips);
+      if (data.slips) {
+        setPayrollSlips(data.slips);
+        showToast('فیش‌های حقوقی با احتساب بیمه ۷٪ و مالیات پله‌ای صادر شد', 'success');
+      }
     } catch (err) {
       console.error(err);
+      showToast('خطا در محاسبه حقوق', 'error');
     }
   };
 
@@ -393,6 +396,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ currentProgress: progress }),
       });
+      showToast('پیشرفت هدف سازمانی ثبت شد', 'info');
     } catch (err) {
       console.error(err);
     }
@@ -407,6 +411,7 @@ export default function App() {
       });
       const created = await res.json();
       setPerformanceGoals((prev) => [created, ...prev]);
+      showToast('هدف عملکردی جدید با موفقیت اضافه شد', 'success');
     } catch (err) {
       console.error(err);
     }
@@ -424,7 +429,8 @@ export default function App() {
     }
   };
 
-  if (isMobileScreen) {
+  // Dedicated Factory PWA Mobile Portal View (Optional Toggle)
+  if (isPwaPortalMode) {
     return (
       <MobileAppShell
         metrics={metrics}
@@ -435,33 +441,24 @@ export default function App() {
         payrollSlips={payrollSlips}
         onRunAutomation={handleRunAutomation}
         onJobCreated={handleCreateJob}
+        onExitToDesktop={() => setIsPwaPortalMode(false)}
       />
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900 font-sans flex flex-col selection:bg-emerald-200 selection:text-emerald-950">
+    <div className="min-h-screen bg-slate-100/90 text-slate-900 font-sans flex flex-col selection:bg-emerald-200 selection:text-emerald-950">
       {/* Top Application Header */}
       <Header
         currentRole={currentRole}
         onRoleChange={handleRoleChange}
         onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
         onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
       />
 
       {/* Main Layout Body */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Mobile Toggle Button */}
-        <div className="lg:hidden fixed bottom-4 left-4 z-50">
-          <button
-            type="button"
-            onClick={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
-            className="w-12 h-12 rounded-full bg-emerald-600 text-white shadow-xl flex items-center justify-center cursor-pointer"
-          >
-            {isMobileSidebarOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
-          </button>
-        </div>
-
+      <div className="flex-1 flex overflow-hidden relative">
         {/* Sidebar Navigation */}
         <Sidebar
           activeModule={activeModule}
@@ -471,7 +468,7 @@ export default function App() {
         />
 
         {/* Dynamic Main Workspace Container */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-7 max-w-7xl mx-auto w-full">
+        <main className="flex-1 min-w-0 overflow-y-auto p-2.5 sm:p-4 md:p-6 lg:p-7 max-w-7xl mx-auto w-full pb-28 lg:pb-12 touch-scroll">
           {isLoading ? (
             <div className="h-96 flex flex-col items-center justify-center gap-3 text-slate-500">
               <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
@@ -479,6 +476,30 @@ export default function App() {
             </div>
           ) : (
             <>
+              {/* Breadcrumbs & Quick Context Switcher */}
+              <Breadcrumbs
+                activeModule={activeModule}
+                onSelectModule={setActiveModule}
+                isPwaPortalMode={isPwaPortalMode}
+                onTogglePwaPortalMode={() => setIsPwaPortalMode(!isPwaPortalMode)}
+              />
+
+              {/* Module 0: Executive 360 Dashboard */}
+              {activeModule === 'dashboard' && (
+                <ExecutiveDashboard
+                  currentRole={currentRole}
+                  metrics={metrics}
+                  departments={departments}
+                  jobs={jobs}
+                  candidates={candidates}
+                  onNavigate={(mod) => setActiveModule(mod)}
+                  onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
+                  onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
+                  onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+                />
+              )}
+
+              {/* Module 1: Recruitment & Screening */}
               {activeModule === 'recruitment' && (
                 <RecruitmentModule
                   currentRole={currentRole}
@@ -490,9 +511,15 @@ export default function App() {
                   onCreateJob={handleCreateJob}
                   onBulkUploadSuccess={handleBulkUploadSuccess}
                   onDraftEmail={handleDraftEmail}
+                  onJobUpdated={(updatedJob) => {
+                    setJobs((prev) =>
+                      prev.map((j) => (j.id === updatedJob.id ? updatedJob : j))
+                    );
+                  }}
                 />
               )}
 
+              {/* Module 2: Employees & Org Chart */}
               {activeModule === 'employees' && (
                 <EmployeesModule
                   employees={employees}
@@ -500,6 +527,7 @@ export default function App() {
                 />
               )}
 
+              {/* Module 3: Attendance & Leaves */}
               {activeModule === 'attendance' && (
                 <AttendanceModule
                   currentRole={currentRole}
@@ -512,6 +540,7 @@ export default function App() {
                 />
               )}
 
+              {/* Module 4: Payroll & Insurance */}
               {activeModule === 'payroll' && (
                 <PayrollModule
                   payrollSlips={payrollSlips}
@@ -519,6 +548,7 @@ export default function App() {
                 />
               )}
 
+              {/* Module 5: Performance OKRs */}
               {activeModule === 'performance' && (
                 <PerformanceModule
                   goals={performanceGoals}
@@ -527,10 +557,12 @@ export default function App() {
                 />
               )}
 
+              {/* Module 6: Training & Skills */}
               {activeModule === 'training' && (
                 <TrainingModule courses={trainingCourses} skillMatrix={skillMatrix} />
               )}
 
+              {/* Module 7: Checklists Onboarding */}
               {activeModule === 'checklists' && (
                 <ChecklistsModule
                   checklists={checklists}
@@ -538,16 +570,42 @@ export default function App() {
                 />
               )}
 
+              {/* Module 8: Analytics & KPIs */}
               {activeModule === 'analytics' && <AnalyticsModule metrics={metrics} />}
             </>
           )}
         </main>
       </div>
 
+      {/* Mobile Bottom Navigation Bar (1-Click Instant Access) */}
+      <BottomNav
+        activeModule={activeModule}
+        onSelectModule={setActiveModule}
+        onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
+      />
+
+      {/* Floating Quick Actions Speed Dial */}
+      <FloatingQuickActions
+        onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
+        onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
+        onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+      />
+
+      {/* 3-Click Command Palette (Ctrl+K Spotlight) */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        onSelectModule={setActiveModule}
+        onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
+        onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
+        jobs={jobs}
+        candidates={candidates}
+      />
+
       {/* Desktop Modal for AI Voice Assistant */}
       {isVoiceModalOpen && (
-        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-xl bg-slate-900 rounded-3xl overflow-hidden shadow-2xl relative border border-emerald-500/30">
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-2.5 sm:p-4">
+          <div className="w-full max-w-xl bg-slate-900 rounded-3xl overflow-hidden shadow-2xl relative border border-emerald-500/30 max-h-[92vh] overflow-y-auto">
             <button
               onClick={() => setIsVoiceModalOpen(false)}
               className="absolute top-4 left-4 z-50 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer transition-colors"
@@ -589,6 +647,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Global Toast Notification System */}
+      <ToastContainer />
     </div>
   );
 }
