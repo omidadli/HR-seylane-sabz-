@@ -82,13 +82,28 @@ const draftEmailTool: FunctionDeclaration = {
   },
 };
 
+/**
+ * Checks whether `word` appears as a standalone word in Persian text.
+ * (Plain `includes()` is wrong here: e.g. 'رد' matches inside 'کرد'/'شد'/'فرد'.
+ * JS \b is ASCII-only, so we split on whitespace + punctuation instead.)
+ */
+function mentionsStandaloneWord(text: string, word: string): boolean {
+  return text
+    .split(/[\s\u200c\u200f,;:.?!()\[\]{}«»""''—–_\-\/\\]+/u)
+    .includes(word);
+}
+
+function mentionsRejection(text: string): boolean {
+  return mentionsStandaloneWord(text, 'رد') || text.includes('عدم احراز');
+}
+
 export async function processAgentChat(userPrompt: string, contextJobId?: string) {
   const apiKey = process.env.GEMINI_API_KEY;
 
   // Execute internal tool dispatch logic based on the user's intent
   const lower = userPrompt.toLowerCase();
   const isCompare = lower.includes('مقایسه') || lower.includes('رادار') || lower.includes('compare');
-  const isDraftEmail = lower.includes('ایمیل') || lower.includes('دعوت') || lower.includes('رد') || lower.includes('draft');
+  const isDraftEmail = lower.includes('ایمیل') || lower.includes('دعوت') || mentionsRejection(lower) || lower.includes('draft');
   const isAnalyzeJob = lower.includes('تحلیل شغل') || lower.includes('معیار') || lower.includes('شاخص');
   const isScoreResume = lower.includes('نمره') || lower.includes('ارزیابی رزومه') || lower.includes('بررسی کارجو');
 
@@ -232,7 +247,7 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
       ];
     } else if (isDraftEmail) {
       const cand = dbStore.candidates[0];
-      const isRejection = lower.includes('رد');
+      const isRejection = mentionsRejection(lower);
       emailDraftPreview = {
         candidateName: cand.fullName,
         candidateEmail: cand.email,
