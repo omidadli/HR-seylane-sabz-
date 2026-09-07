@@ -16,7 +16,38 @@ import {
   Layers,
   ArrowRight,
 } from 'lucide-react';
-import { Employee, LeaveRequest, PayrollSlip } from '../../types';
+import { Employee, LeaveRequest, LeaveStatus, LeaveType, PayrollSlip } from '../../types';
+import { formatToman, toPersianDigits } from '../../utils/jalali';
+
+function getLeaveTypeLabel(leaveType: LeaveType): string {
+  switch (leaveType) {
+    case LeaveType.ANNUAL:
+      return 'روزانه استحقاقی';
+    case LeaveType.SICK:
+      return 'استعلاجی';
+    case LeaveType.HOURLY:
+      return 'ساعتی';
+    case LeaveType.UNPAID:
+      return 'بدون حقوق';
+    case LeaveType.MARRIAGE:
+      return 'ازدواج';
+    case LeaveType.MATERNITY:
+      return 'زایمان';
+    default:
+      return 'نامشخص';
+  }
+}
+
+function getLeaveStatusBadge(status: LeaveStatus): { label: string; className: string } {
+  switch (status) {
+    case LeaveStatus.APPROVED:
+      return { label: 'تایید شده', className: 'bg-emerald-100 text-emerald-800' };
+    case LeaveStatus.REJECTED:
+      return { label: 'رد شده', className: 'bg-rose-100 text-rose-800' };
+    default:
+      return { label: 'در انتظار تایید', className: 'bg-amber-100 text-amber-800' };
+  }
+}
 
 interface MobilePersonnelPortalProps {
   employees: Employee[];
@@ -135,12 +166,18 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
                 className="bg-white rounded-xl p-3 border border-slate-200 shadow-sm hover:border-emerald-300 transition-all flex items-center justify-between gap-2"
               >
                 <div className="flex items-center gap-3">
-                  <img
-                    src={emp.avatar}
-                    alt={emp.fullName}
-                    className="w-10 h-10 rounded-full object-cover border border-emerald-200"
-                    referrerPolicy="no-referrer"
-                  />
+                  {emp.avatarUrl ? (
+                    <img
+                      src={emp.avatarUrl}
+                      alt={emp.fullName}
+                      className="w-10 h-10 rounded-full object-cover border border-emerald-200"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-800 flex items-center justify-center text-sm font-black border border-emerald-200 shrink-0">
+                      {emp.fullName.trim().charAt(0)}
+                    </div>
+                  )}
                   <div>
                     <span className="text-xs font-bold text-slate-900 block">{emp.fullName}</span>
                     <span className="text-[10px] text-slate-500 block">
@@ -154,7 +191,7 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
 
                 <div className="flex items-center gap-1.5">
                   <a
-                    href={`tel:${emp.mobile}`}
+                    href={`tel:${emp.phone}`}
                     className="w-7 h-7 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center hover:bg-emerald-100 transition-colors"
                     title="تماس تلفنی"
                   >
@@ -199,13 +236,14 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
                   <div>
                     <span className="font-bold text-slate-900 block">{slip.employeeName}</span>
                     <span className="text-[10px] text-slate-500">
-                      کد پرسنلی: {slip.personnelCode} • دوره {slip.periodMonthJalali}
+                      کد پرسنلی: {toPersianDigits(slip.personnelCode)} • دوره {slip.monthName}{' '}
+                      {toPersianDigits(slip.yearJalali)}
                     </span>
                   </div>
                   <div className="text-left">
                     <span className="text-[10px] text-slate-400 block">خالص پرداختی:</span>
                     <span className="text-xs font-black text-emerald-700 font-mono">
-                      {(slip.netPayRials / 10).toLocaleString('fa-IR')} تومان
+                      {formatToman(slip.netSalaryToman)}
                     </span>
                   </div>
                 </div>
@@ -215,13 +253,17 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
                   <div>
                     <span className="text-slate-500">جمع ناخالص مزایا: </span>
                     <span className="font-bold text-slate-700 font-mono">
-                      {(slip.grossPayRials / 10).toLocaleString('fa-IR')} ت
+                      {formatToman(slip.grossSalaryToman)}
                     </span>
                   </div>
                   <div>
                     <span className="text-slate-500">کسورات قانونی: </span>
                     <span className="font-bold text-rose-600 font-mono">
-                      {(slip.totalDeductionsRials / 10).toLocaleString('fa-IR')} ت
+                      {formatToman(
+                        slip.ssoInsurance7PctToman +
+                          slip.incomeTaxToman +
+                          slip.otherDeductionsToman
+                      )}
                     </span>
                   </div>
                 </div>
@@ -247,7 +289,9 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
           </div>
 
           <div className="space-y-2">
-            {leaves.map((leave) => (
+            {leaves.map((leave) => {
+              const statusBadge = getLeaveStatusBadge(leave.status);
+              return (
               <div
                 key={leave.id}
                 className="bg-white rounded-xl p-3 border border-slate-200 shadow-sm space-y-2"
@@ -256,18 +300,14 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
                   <div>
                     <span className="font-bold text-slate-900 block">{leave.employeeName}</span>
                     <span className="text-[10px] text-slate-500">
-                      نوع: {leave.type === 'DAILY' ? 'روزانه استحقاقی' : 'ساعتی'} • {leave.daysCount} روز
+                      نوع: {getLeaveTypeLabel(leave.leaveType)} • {toPersianDigits(leave.daysCount)} روز
                     </span>
                   </div>
 
                   <span
-                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-                      leave.status === 'APPROVED'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : 'bg-amber-100 text-amber-800'
-                    }`}
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${statusBadge.className}`}
                   >
-                    {leave.status === 'APPROVED' ? 'تایید شده' : 'در انتظار تایید'}
+                    {statusBadge.label}
                   </span>
                 </div>
 
@@ -276,11 +316,12 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
                 </p>
 
                 <div className="flex items-center justify-between text-[10px] text-slate-400">
-                  <span>از {leave.startDateJalali} تا {leave.endDateJalali}</span>
-                  <span>تاریخ ثبت: {leave.createdAtJalali}</span>
+                  <span>از {toPersianDigits(leave.startDateJalali)} تا {toPersianDigits(leave.endDateJalali)}</span>
+                  <span>تاریخ ثبت: {toPersianDigits(leave.createdAtJalali)}</span>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

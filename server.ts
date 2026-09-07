@@ -5,6 +5,7 @@
 
 import express from 'express';
 import path from 'path';
+import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { dbStore } from './server/store';
 import { processAgentChat, generateJobAd, processVoiceCommand } from './server/gemini';
@@ -16,10 +17,21 @@ import {
   PayrollStatus,
   UserRole,
 } from './src/types';
+import {
+  JALALI_MONTH_NAMES,
+  formatJalaliDate,
+  getJalaliMonthDays,
+  getTodayJalali,
+  toPersianDigits,
+} from './src/utils/jalali';
+
+// Load .env in development (GEMINI_API_KEY, PORT, ...). Real environment
+// variables injected by the host always take precedence over .env values.
+dotenv.config();
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '50mb' }));
 
@@ -119,6 +131,9 @@ async function startServer() {
   app.patch('/api/candidates/:id/stage', (req, res) => {
     const { id } = req.params;
     const { stage } = req.body;
+    if (!Object.values(CandidateStage).includes(stage)) {
+      return res.status(400).json({ error: 'مرحله استخدامی نامعتبر است' });
+    }
     const cand = dbStore.candidates.find(c => c.id === id);
     if (!cand) return res.status(404).json({ error: 'کارجو یافت نشد' });
     cand.stage = stage;
@@ -147,6 +162,19 @@ async function startServer() {
     res.json(cand);
   });
 
+  // Minimal Persian->Latin map so generated seed e-mails are valid ASCII.
+  // (Persian script in the local part, e.g. 'یاسمین.غفاری@example.com', is not a valid e-mail.)
+  const faNameLatin: Record<string, string> = {
+    'سینا': 'sina', 'الناز': 'elnaz', 'پویان': 'pouyan', 'بهار': 'bahar',
+    'حامد': 'hamed', 'رکسانا': 'roksana', 'فرزاد': 'farzad', 'سوگند': 'sougand',
+    'مهراد': 'mehrad', 'یاسمین': 'yasamin', 'آرش': 'arash', 'ترانه': 'taraneh',
+    'نوید': 'navid', 'مینا': 'mina', 'کاظمی': 'kazemi', 'رحیمی': 'rahimi',
+    'طاهری': 'taheri', 'غفاری': 'ghafari', 'صادقی': 'sadeghi', 'حسینی': 'hosseini',
+    'میرزایی': 'mirzaei', 'کریمی': 'karimi', 'افشار': 'afshar', 'نوری': 'nouri',
+    'باقری': 'bagheri', 'شریفی': 'sharifi',
+  };
+  const latinName = (fa: string, fallback: string): string => faNameLatin[fa] || fallback;
+
   // Bulk resume upload processing (simulates 200+ resumes real-time processing)
   app.post('/api/candidates/bulk-upload', (req, res) => {
     const { filesCount, jobId } = req.body;
@@ -172,7 +200,7 @@ async function startServer() {
         jobId: targetJob.id,
         jobTitle: targetJob.title,
         fullName,
-        email: `${fn.toLowerCase()}.${ln.toLowerCase()}@example.com`,
+        email: `${latinName(fn, 'applicant')}.${latinName(ln, 'resume')}.${Date.now().toString(36)}${i}@example.com`,
         phone: `0912${Math.floor(1000000 + Math.random() * 9000000)}`,
         resumeFileName: `Resume_${fullName.replace(' ', '_')}.pdf`,
         resumeText: `فارغ‌التحصیل رشته مهندسی، سابقه کار مرتبط در استارتاپ‌ها، آشنا با اصول نرم‌افزار.`,
@@ -194,8 +222,23 @@ async function startServer() {
       newCandidatesBatch.push(cand);
     }
 
-    // Add first 15 directly to avoid overwhelming memory, keep stats
-    dbStore.candidates.unshift(...newCandidatesBatch.slice(0, 15));
+    // Store the whole processed batch so the pipeline matches the reported
+    // stats. A global cap keeps the in-memory store bounded; when the cap is
+    // hit the oldest bulk-imported candidates are evicted first.
+    const MAX_CANDIDATES = 1000;
+    dbStore.candidates.unshift(...newCandidatesBatch);
+    const overflow = dbStore.candidates.length - MAX_CANDIDATES;
+    if (overflow > 0) {
+      const bulkIdx: number[] = [];
+      dbStore.candidates.forEach((c, idx) => {
+        if (c.id.startsWith('cand-bulk-')) bulkIdx.push(idx);
+      });
+      // Evict oldest bulk imports (they sit at the end of the array).
+      bulkIdx.sort((a, b) => b - a);
+      for (const idx of bulkIdx.slice(0, overflow)) {
+        dbStore.candidates.splice(idx, 1);
+      }
+    }
     targetJob.applicationsCount += totalFiles;
 
     res.json({
@@ -298,7 +341,11 @@ async function startServer() {
   // Candidate comparison data (Table & Radar chart)
   app.post('/api/candidates/compare', (req, res) => {
     const { candidateIds } = req.body;
-    const candidates = dbStore.candidates.filter(c => candidateIds.includes(c.id));
+    if (!Array.isArray(candidateIds) || candidateIds.length < 2) {
+      return res.status(400).json({ error: 'برای مقایسه حداقل ۲ شناسه کارجو لازم است' });
+    }
+    const wanted = new Set(candidateIds.filter(id => typeof id === 'string'));
+    const candidates = dbStore.candidates.filter(c => wanted.has(c.id));
     if (candidates.length === 0) {
       return res.status(400).json({ error: 'هیچ کارجویی یافت نشد' });
     }
@@ -385,17 +432,31 @@ async function startServer() {
 
   app.post('/api/attendance/check-in-out', (req, res) => {
     const { employeeId, type } = req.body;
-    const emp = dbStore.employees.find(e => e.id === employeeId) || dbStore.employees[0];
-    const now = new Date();
-    const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    if (type !== 'CHECK_IN' && type !== 'CHECK_OUT') {
+      return res.status(400).json({ error: 'نوع تردد نامعتبر است' });
+    }
+    const emp = dbStore.employees.find(e => e.id === employeeId);
+    if (!emp) {
+      return res.status(404).json({ error: 'پرسنل یافت نشد' });
+    }
 
-    let record = dbStore.attendances.find(a => a.employeeId === emp.id && a.dateJalali === '۱۴۰۳/۰۶/۱۵');
+    // Real current Jalali date (Persian digits, matching the rest of the dataset)
+    const todayJalali = formatJalaliDate(getTodayJalali(), true);
+    const now = new Date();
+    const timeEn = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const timeStr = toPersianDigits(timeEn);
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const SHIFT_START_MINUTES = 8 * 60; // 08:00
+    const SHIFT_END_MINUTES = 17 * 60; // 17:00
+
+    let record = dbStore.attendances.find(a => a.employeeId === emp.id && a.dateJalali === todayJalali);
     if (!record) {
       record = {
         id: `att-${Date.now()}`,
         employeeId: emp.id,
         employeeName: emp.fullName,
-        dateJalali: '۱۴۰۳/۰۶/۱۵',
+        dateJalali: todayJalali,
         delayMinutes: 0,
         overtimeHours: 0,
         status: 'PRESENT',
@@ -404,9 +465,18 @@ async function startServer() {
     }
 
     if (type === 'CHECK_IN') {
+      if (record.checkIn) {
+        // Never silently overwrite an existing check-in.
+        return res.json({ ...record, notice: 'ورود امروز قبلاً ثبت شده است' });
+      }
       record.checkIn = timeStr;
+      record.delayMinutes = Math.max(0, nowMinutes - SHIFT_START_MINUTES);
     } else {
+      if (record.checkOut) {
+        return res.json({ ...record, notice: 'خروج امروز قبلاً ثبت شده است' });
+      }
       record.checkOut = timeStr;
+      record.overtimeHours = Math.max(0, Math.round(((nowMinutes - SHIFT_END_MINUTES) / 60) * 10) / 10);
     }
 
     res.json(record);
@@ -438,18 +508,44 @@ async function startServer() {
 
   app.patch('/api/leave/requests/:id/approve', (req, res) => {
     const { id } = req.params;
-    const { role, approved, comment } = req.body;
+    const { approved, comment } = req.body;
+    // SECURITY: the acting role is taken from the server-side session state,
+    // never from the request body (clients must not be able to escalate to HR).
+    const role = dbStore.currentUserRole;
     const reqItem = dbStore.leaveRequests.find(l => l.id === id);
     if (!reqItem) return res.status(404).json({ error: 'درخواست مرخصی یافت نشد' });
+    if (typeof approved !== 'boolean') {
+      return res.status(400).json({ error: 'نتیجه بررسی نامشخص است' });
+    }
+    if (reqItem.status === LeaveStatus.APPROVED || reqItem.status === LeaveStatus.REJECTED) {
+      return res.status(409).json({ error: 'این درخواست قبلاً تعیین تکلیف شده است' });
+    }
 
     if (role === UserRole.DEPT_MANAGER) {
+      if (reqItem.status !== LeaveStatus.PENDING_MANAGER) {
+        return res.status(403).json({ error: 'این درخواست در مرحله تایید مدیر واحد نیست' });
+      }
       reqItem.managerApproved = approved;
       reqItem.managerComment = comment;
       reqItem.status = approved ? LeaveStatus.PENDING_HR : LeaveStatus.REJECTED;
     } else if (role === UserRole.HR_DIRECTOR) {
-      reqItem.hrApproved = approved;
-      reqItem.hrComment = comment;
-      reqItem.status = approved ? LeaveStatus.APPROVED : LeaveStatus.REJECTED;
+      if (reqItem.status === LeaveStatus.PENDING_HR) {
+        reqItem.hrApproved = approved;
+        reqItem.hrComment = comment;
+        reqItem.status = approved ? LeaveStatus.APPROVED : LeaveStatus.REJECTED;
+      } else if (reqItem.status === LeaveStatus.PENDING_MANAGER) {
+        // HR outranks the workflow: acting on a manager-stage request records
+        // both approvals at once instead of skipping the manager silently.
+        reqItem.managerApproved = approved;
+        reqItem.managerComment = comment ?? 'تایید مستقیم منابع انسانی';
+        reqItem.hrApproved = approved;
+        reqItem.hrComment = comment;
+        reqItem.status = approved ? LeaveStatus.APPROVED : LeaveStatus.REJECTED;
+      } else {
+        return res.status(403).json({ error: 'این درخواست قابل بررسی نیست' });
+      }
+    } else {
+      return res.status(403).json({ error: 'شما اجازه تایید مرخصی ندارید' });
     }
 
     res.json(reqItem);
@@ -463,11 +559,47 @@ async function startServer() {
   });
 
   app.post('/api/payroll/generate', (req, res) => {
-    const { monthJalali, yearJalali } = req.body;
-    // Recalculate payroll for active employees with Iranian labor laws:
+    const monthJalali = Number(req.body?.monthJalali);
+    const yearJalali = Number(req.body?.yearJalali);
+    if (!Number.isInteger(monthJalali) || monthJalali < 1 || monthJalali > 12) {
+      return res.status(400).json({ error: 'ماه شمسی نامعتبر است (۱ تا ۱۲)' });
+    }
+    if (!Number.isInteger(yearJalali) || yearJalali < 1300 || yearJalali > 1500) {
+      return res.status(400).json({ error: 'سال شمسی نامعتبر است' });
+    }
+
+    // Recalculate payroll with Iranian labor laws:
     // Housing: 900,000 Toman, Bon-e-Kargari: 1,400,000 Toman, Child allowance per child: 716,618 Toman
-    // SSO 7% deduction
-    // Progressive income tax (exempt under 12,000,000 Toman, 10% on next brackets)
+    // SSO 7% deduction, progressive income-tax brackets.
+    // NOTE: commute/overtime below are fixed planning constants until the
+    // attendance module feeds real per-employee overtime into payroll.
+    const monthName = JALALI_MONTH_NAMES[monthJalali - 1];
+    const lastDay = getJalaliMonthDays(yearJalali, monthJalali);
+    const paidAtJalali = toPersianDigits(
+      `${yearJalali}/${String(monthJalali).padStart(2, '0')}/${String(lastDay).padStart(2, '0')}`
+    );
+
+    // Simplified progressive salary-tax brackets (monthly, Toman):
+    // 0% up to 12M, 10% on 12-16.8M, 15% on 16.8-27M, 20% above 27M.
+    const calcProgressiveTax = (taxable: number): number => {
+      if (taxable <= 0) return 0;
+      const brackets: Array<{ upTo: number; rate: number }> = [
+        { upTo: 12000000, rate: 0 },
+        { upTo: 16800000, rate: 0.10 },
+        { upTo: 27000000, rate: 0.15 },
+        { upTo: Number.POSITIVE_INFINITY, rate: 0.20 },
+      ];
+      let tax = 0;
+      let prevLimit = 0;
+      for (const b of brackets) {
+        const portion = Math.min(taxable, b.upTo) - prevLimit;
+        if (portion > 0) tax += portion * b.rate;
+        prevLimit = b.upTo;
+        if (taxable <= b.upTo) break;
+      }
+      return Math.round(tax);
+    };
+
     const generatedSlips = dbStore.employees.map(emp => {
       const baseSalary = emp.baseSalaryToman;
       const housing = 900000;
@@ -481,23 +613,21 @@ async function startServer() {
       const insurableSalary = gross - commute;
       const sso7Pct = Math.round(insurableSalary * 0.07);
 
-      // Iranian progressive tax brackets:
-      // Exemption up to 12,000,000 Toman
       const taxable = Math.max(0, gross - 12000000 - sso7Pct);
-      const tax = Math.round(taxable * 0.10);
+      const tax = calcProgressiveTax(taxable);
 
       const net = gross - sso7Pct - tax;
       const sanavat = Math.round(baseSalary / 12); // monthly reserve
       const eidi = Math.round((baseSalary * 2) / 12); // monthly reserve
 
       return {
-        id: `pay-${emp.id}-${monthJalali}-${yearJalali}`,
+        id: `pay-${emp.id}-${yearJalali}-${monthJalali}`,
         employeeId: emp.id,
         employeeName: emp.fullName,
         personnelCode: emp.personnelCode,
-        monthJalali: Number(monthJalali) || 6,
-        monthName: 'شهریور',
-        yearJalali: Number(yearJalali) || 1403,
+        monthJalali,
+        monthName,
+        yearJalali,
         baseSalaryToman: baseSalary,
         housingAllowanceToman: housing,
         bonKargariToman: bonKargari,
@@ -512,11 +642,21 @@ async function startServer() {
         sanavatReserveToman: sanavat,
         eidiReserveToman: eidi,
         status: PayrollStatus.FINALIZED,
-        paidAtJalali: '۱۴۰۳/۰۶/۳۱',
+        paidAtJalali,
       };
     });
 
-    dbStore.payrollSlips = generatedSlips;
+    // Merge: replace slips for this (year, month), keep every other period.
+    // Regenerating the same month is idempotent instead of duplicating rows.
+    const regeneratedKeys = new Set(
+      generatedSlips.map(sl => `${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`)
+    );
+    dbStore.payrollSlips = [
+      ...dbStore.payrollSlips.filter(
+        sl => !regeneratedKeys.has(`${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`)
+      ),
+      ...generatedSlips,
+    ];
     res.json({ success: true, count: generatedSlips.length, slips: generatedSlips });
   });
 
@@ -582,6 +722,20 @@ async function startServer() {
   // -------------------------------------------------------------
   app.get('/api/analytics/metrics', (req, res) => {
     res.json(dbStore.metrics);
+  });
+
+  // -------------------------------------------------------------
+  // API 404 + Central Error Handler
+  // -------------------------------------------------------------
+  // Unknown /api/* routes get JSON (never the SPA shell or a stack trace).
+  app.use('/api', (req, res) => {
+    res.status(404).json({ error: 'مسیر API یافت نشد' });
+  });
+
+  app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('Unhandled API error:', err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: 'خطای داخلی سرور' });
   });
 
   // -------------------------------------------------------------

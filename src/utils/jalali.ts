@@ -39,19 +39,31 @@ export interface JalaliDate {
  * Checks if a Jalali year is a leap year (سال کبیسه)
  */
 export function isJalaliLeapYear(jy: number): boolean {
-  // Algorithm based on 33-year cycle
+  // Leap calculation ported from the well-tested jalCal algorithm
+  // (same leap table as the official Iranian calendar:
+  // ..., 1395, 1399, 1403, 1408, 1412, 1416, 1420, ...).
+  // A year is leap when `leap === 0`.
   const breaks = [-61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097, 2192, 2262, 2324, 2394, 2456, 3178];
+  const bl = breaks.length;
   let jp = breaks[0];
   let jump = 0;
-  for (let j = 1; j < breaks.length; j += 1) {
-    const jm = breaks[j];
+  for (let i = 1; i < bl; i += 1) {
+    const jm = breaks[i];
     jump = jm - jp;
     if (jy < jm) break;
     jp = jm;
   }
   let n = jy - jp;
-  if (n < 0) n += jump;
-  return ((n % 33) % 4 === 1 && Math.floor((n % 33) / 4) !== 0);
+  // Find how many years have passed since the last leap year.
+  if (jump - n < 6) {
+    n = n - jump + Math.floor((jump + 4) / 33) * 33;
+  }
+  const mod = (a: number, b: number): number => a - Math.trunc(a / b) * b;
+  let leap = mod(mod(n + 1, 33) - 1, 4);
+  if (leap === -1) {
+    leap = 4;
+  }
+  return leap === 0;
 }
 
 /**
