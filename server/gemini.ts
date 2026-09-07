@@ -5,6 +5,10 @@
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import { dbStore } from './store';
 import { CandidateCategory, CandidateStage } from '../src/types';
+import { toPersianDigits } from '../src/utils/jalali';
+
+// Single place to configure the Gemini model (override with GEMINI_MODEL env var).
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 
 // Tool Declarations for Gemini Function Calling
 const analyzeJobPostingTool: FunctionDeclaration = {
@@ -120,11 +124,36 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
         httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
       });
 
+      // Bounded context: only the target job plus the top-ranked candidates with
+      // truncated evidence. (Injecting every candidate in full explodes the
+      // prompt after bulk imports and slows down every chat turn.)
+      const scopedCandidates = (dbStore.candidates || [])
+        .filter(c => !contextJobId || c.jobId === contextJobId);
+      const contextCandidates = scopedCandidates
+        .slice()
+        .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
+        .slice(0, 12)
+        .map(c => ({
+          id: c.id,
+          name: c.fullName,
+          score: c.overallScore,
+          category: c.category,
+          stage: c.stage,
+          topStrength: (c.strengths || [])[0]?.slice(0, 120),
+          evidence: (c.resumeQuotes || [])[0]?.slice(0, 160),
+        }));
+      const contextJobs = (dbStore.jobs || [])
+        .filter(j => !contextJobId || j.id === contextJobId)
+        .map(j => ({
+          id: j.id,
+          title: j.title,
+          criteria: (j.criteria || []).map(cr => ({ title: cr.title, weight: cr.weight })),
+        }));
       const systemInstruction = `شما دستیار هوشمند و ارشد جذب و استخدام (AI Recruiter Specialist) در سامانه جامع منابع انسانی «سیلانه سبز» (ویژه هلدینگ سیلانه سبز و برندهای دافی، کامان، میس‌ویک و کاپوت) هستید.
 شما باید همواره به زبان فارسی سلیس، رسمی و حرفه‌ای پاسخ دهید.
-اطلاعات موجود در سیستم:
-موقعیت‌های شغلی: ${JSON.stringify(dbStore.jobs.map(j => ({ id: j.id, title: j.title, criteria: j.criteria })))}
-کارجویان: ${JSON.stringify(dbStore.candidates.map(c => ({ id: c.id, name: c.fullName, score: c.overallScore, category: c.category, stage: c.stage, strengths: c.strengths, weaknesses: c.weaknesses, quotes: c.resumeQuotes })))}
+اطلاعات موجود در سیستم (موقعیت هدف و ${contextCandidates.length} کارجوی برتر از مجموع ${scopedCandidates.length} نفر):
+موقعیت‌های شغلی: ${JSON.stringify(contextJobs)}
+کارجویان: ${JSON.stringify(contextCandidates)}
 
 قوانین و استانداردها:
 ۱. دسته‌بندی کارجو: بالای ۷ = اولویت مصاحبه، ۵ تا ۷ = نیازمند بررسی مدیر، زیر ۵ = رد اولیه
@@ -132,7 +161,7 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
 ۳. در تحلیل و امتیازدهی، حتماً شواهد مستقیم متنی از داخل رزومه نقل قول کنید.`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_MODEL,
         contents: userPrompt,
         config: {
           systemInstruction,
@@ -156,6 +185,7 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
           if (call.name === 'compare_candidates') {
             const cids = (call.args as any).candidateIds || (dbStore.candidates || []).slice(0, 3).map(c => c.id);
             const candidates = (dbStore.candidates || []).filter(c => cids.includes(c.id));
+            if (candidates.length === 0) continue;
             const criteria = Object.keys(candidates[0]?.criteriaScores || {
               'تسلط فنی': 8,
               'تایپ‌اسکریپت': 8,
@@ -174,9 +204,11 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
               scores: scoresMap,
             };
           } else if (call.name === 'draft_email') {
-            const cid = (call.args as any).candidateId || dbStore.candidates[0].id;
+            const allCands = dbStore.candidates || [];
+            if (allCands.length === 0) continue;
+            const cid = (call.args as any).candidateId || allCands[0].id;
             const ctype = (call.args as any).type || 'INVITATION';
-            const cand = dbStore.candidates.find(c => c.id === cid) || dbStore.candidates[0];
+            const cand = allCands.find(c => c.id === cid) || allCands[0];
 
             emailDraftPreview = {
               candidateName: cand.fullName,
@@ -206,47 +238,72 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
   // If text not generated yet, provide rich, authoritative Persian domain response
   if (!generatedText) {
     if (isCompare) {
-      const candidates = (dbStore.candidates || []).filter(c => c.jobId === (contextJobId || 'job-1')).slice(0, 3);
-      const criteria = [
-        'تسلط بر React و معماری کلاینت',
-        'تایپ‌اسکریپت پیشرفته و مدیریت خطا',
-        'طراحی واکنش‌گرا و سازگاری کامل RTL',
-        'روحیه کار تیمی و مهارت‌های ارتباطی',
-        'سابقه کار با تست‌نویسی و ابزارهای CI/CD',
-      ];
+      const ranked = (dbStore.candidates || [])
+        .filter(c => c.jobId === (contextJobId || 'job-1'))
+        .slice()
+        .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
+      const candidates = ranked.slice(0, 3);
 
-      const scoresMap: Record<string, Record<string, number>> = {};
-      candidates.forEach(c => {
-        scoresMap[c.fullName] = c.criteriaScores || {};
-      });
+      if (candidates.length < 2) {
+        generatedText = `برای مقایسه تطبیقی حداقل ۲ کارجو در این موقعیت لازم است. در حال حاضر ${toPersianDigits(ranked.length)} کارجو برای موقعیت انتخاب‌شده ثبت شده است.`;
+        suggestedActions = ['بارگذاری گروهی ۲۰۰ رزومه جدید برای ارزیابی'];
+      } else {
+        // Criteria = union of the compared candidates' own score keys, so the
+        // radar chart reflects real data (falls back to the job criteria).
+        const criteriaSet = new Set<string>();
+        candidates.forEach(c => Object.keys(c.criteriaScores || {}).forEach(k => criteriaSet.add(k)));
+        if (criteriaSet.size === 0) {
+          const job = (dbStore.jobs || []).find(j => j.id === (contextJobId || 'job-1'));
+          (job?.criteria || []).forEach(cr => criteriaSet.add(cr.title));
+        }
+        const criteria = Array.from(criteriaSet);
 
-      radarData = {
-        candidates: candidates.map(c => c.fullName),
-        criteria,
-        scores: scoresMap,
-      };
+        const scoresMap: Record<string, Record<string, number>> = {};
+        candidates.forEach(c => {
+          scoresMap[c.fullName] = {};
+          criteria.forEach(crit => {
+            scoresMap[c.fullName][crit] = c.criteriaScores?.[crit] ?? c.overallScore ?? 0;
+          });
+        });
 
-      generatedText = `تحلیل تطبیقی و نمودار رادار شایستگی‌ها برای کارجویان موقعیت آماده گردید:
+        radarData = {
+          candidates: candidates.map(c => c.fullName),
+          criteria,
+          scores: scoresMap,
+        };
 
-۱. **خانم نیلوفر رضوانی** (نمره ۹.۲ - اولویت مصاحبه):
-- شایستگی برتر: معماری ماژولار و تجربه عملی طراحی دیزاین سیستم RTL.
-- نقل قول از رزومه: «بازطراحی داشبورد سازمانی با React 18 و کاهش زمان لود به میزان ۴۰٪»
+        const faOrdinals = ['۱', '۲', '۳'];
+        const catLabel = (cat: unknown): string =>
+          cat === CandidateCategory.INTERVIEW_PRIORITY ? 'اولویت مصاحبه'
+          : cat === CandidateCategory.NEEDS_REVIEW ? 'نیازمند بررسی مدیر'
+          : cat === CandidateCategory.INITIAL_REJECTION ? 'رد اولیه'
+          : 'بدون دسته‌بندی';
+        const lines = candidates.map((c, i) => {
+          const parts = [`${faOrdinals[i]}. **${c.fullName}** (نمره ${toPersianDigits(c.overallScore ?? '—')} - ${catLabel(c.category)}):`];
+          if (c.strengths?.[0]) parts.push(`- شایستگی برتر: ${c.strengths[0]}`);
+          if (c.resumeQuotes?.[0]) parts.push(`- نقل قول از رزومه: ${c.resumeQuotes[0]}`);
+          return parts.join('\n');
+        });
+        const top = candidates[0];
+        generatedText = `تحلیل تطبیقی و نمودار رادار شایستگی‌ها برای کارجویان موقعیت آماده گردید:\n\n${lines.join('\n\n')}\n\nنمودار رادار و جدول مقایسه در کادر زیر قابل مشاهده است. آیا مایلید پیش‌نویس دعوت به مصاحبه برای ${top.fullName} تنظیم گردد؟`;
 
-۲. **آقای محمدرضا سلطانی** (نمره ۸.۸ - اولویت مصاحبه):
-- شایستگی برتر: توانایی حل مسئله بالا در ابعاد فین‌تک و سامانه‌های مقیاس‌بالا.
-
-۳. **آقای امیرحسین کاظمی** (نمره ۶.۴ - نیازمند بررسی مدیر):
-- پتانسیل رشد بالا در فرانت‌اند عمومی؛ پیشنهاد مصاحبه ارزیابی سطح متوسط (Mid-level).
-
-نمودار رادار و جدول مقایسه در کادر زیر قابل مشاهده است. آیا مایلید پیش‌نویس دعوت به مصاحبه برای نیلوفر رضوانی تنظیم گردد؟`;
-
-      suggestedActions = [
-        'تنظیم پیش‌نویس دعوت به مصاحبه برای نیلوفر رضوانی',
-        'انتقال امیرحسین کاظمی به استخر استعدادها',
-        'مشاهده جدول کامل نمرات',
-      ];
+        suggestedActions = [
+          `تنظیم پیش‌نویس دعوت به مصاحبه برای ${top.fullName}`,
+          'مشاهده جدول کامل نمرات',
+        ];
+      }
     } else if (isDraftEmail) {
-      const cand = dbStore.candidates[0];
+      // Prefer a candidate named in the prompt, else the top candidate of the
+      // context job. Never crash on an empty pipeline.
+      const scoped = (dbStore.candidates || []).filter(c => c.jobId === (contextJobId || 'job-1'));
+      const pool = scoped.length > 0 ? scoped : (dbStore.candidates || []);
+      const named = pool.find(c => c.fullName && lower.includes(c.fullName.toLowerCase()));
+      const rankedPool = pool.slice().sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0));
+      const cand = named || rankedPool[0];
+      if (!cand) {
+        generatedText = `در حال حاضر کارجویی در سامانه ثبت نشده است تا پیش‌نویس ایمیل برای ایشان تنظیم شود.`;
+        suggestedActions = ['بارگذاری گروهی ۲۰۰ رزومه جدید برای ارزیابی'];
+      } else {
       const isRejection = mentionsRejection(lower);
       emailDraftPreview = {
         candidateName: cand.fullName,
@@ -254,10 +311,10 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
         type: isRejection ? 'REJECTION' : 'INVITATION',
         subject: isRejection
           ? `نتیجه ارزیابی رزومه - هلدینگ سیلانه سبز`
-          : `دعوت به مصاحبه تخصصی حضوری - کارشناس ارشد توسعه فرانت‌اند`,
+          : `دعوت به مصاحبه تخصصی حضوری - ${cand.jobTitle || 'موقعیت شغلی'}`,
         body: isRejection
-          ? `سرکار خانم ${cand.fullName} گرامی،\nبا سلام و احترام،\nاز همراهی و ارسال رزومه ارزشمندتان کمال سپاس را داریم. با توجه به اولویت‌های فعلی پروژه، در حال حاضر امکان همکاری مقدور نمی‌باشد اما مشخصات شما در استخر استعدادهای سازمانی ما ذخیره گردید.`
-          : `سرکار خانم ${cand.fullName} گرامی،\n\nبا سلام و احترام،\nپیرو بررسی تخصصی رزومه و سوابق درخشان شما در توسعه سامانه‌های مبتنی بر React و تایپ‌اسکریپت (کسب امتیاز ۹.۲ از ۱۰)، با کمال مسرت از شما جهت حضور در جلسه مصاحبه فنی و معارفه دعوت به عمل می‌آوریم.\n\nزمان پیشنهادی: یکشنبه ۲۵ شهریور ۱۴۰۳، ساعت ۱۰:۳۰ صبح\nمحل جلسه: تهران، ستاد مرکزی هلدینگ سیلانه سبز، سالن اجتماعات منابع انسانی\n\nلطفاً آمادگی خود را از طریق پاسخ به این ایمیل اعلام فرمایید.\n\nبا آرزوی موفقیت،\nمدیریت جذب و استعدادهای هلدینگ سیلانه سبز`,
+          ? `${cand.fullName} گرامی،\nبا سلام و احترام،\nاز همراهی و ارسال رزومه ارزشمندتان کمال سپاس را داریم. با توجه به اولویت‌های فعلی پروژه، در حال حاضر امکان همکاری مقدور نمی‌باشد اما مشخصات شما در استخر استعدادهای سازمانی ما ذخیره گردید.`
+          : `${cand.fullName} گرامی،\n\nبا سلام و احترام،\nپیرو بررسی تخصصی رزومه و سوابق درخشان شما در توسعه سامانه‌های مبتنی بر React و تایپ‌اسکریپت (کسب امتیاز ${toPersianDigits(cand.overallScore ?? '—')} از ۱۰)، با کمال مسرت از شما جهت حضور در جلسه مصاحبه فنی و معارفه دعوت به عمل می‌آوریم.\n\nزمان پیشنهادی: یکشنبه ۲۵ شهریور ۱۴۰۳، ساعت ۱۰:۳۰ صبح\nمحل جلسه: تهران، ستاد مرکزی هلدینگ سیلانه سبز، سالن اجتماعات منابع انسانی\n\nلطفاً آمادگی خود را از طریق پاسخ به این ایمیل اعلام فرمایید.\n\nبا آرزوی موفقیت،\nمدیریت جذب و استعدادهای هلدینگ سیلانه سبز`,
         status: 'DRAFT_ONLY',
         createdAtJalali: '۱۴۰۳/۰۶/۱۵',
       };
@@ -270,20 +327,48 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
         'تغییر تاریخ و ساعت مصاحبه',
         'تنظیم پیش‌نویس ایمیل رد برای متقاضیان زیر ۵',
       ];
+      }
     } else if (isAnalyzeJob) {
-      generatedText = `عنوان شغلی مورد نظر بررسی شد و ۴ شاخص کلیدی با وزن‌دهی استاندارد استخراج گردید:
-
-۱. **تسلط بر معماری فرانت‌اند و React (وزن ۳۵٪)**: طراحی هوک‌های سفارشی، State Management و بهینه‌سازی رندر.
-۲. **تسلط بر تایپ‌اسکریپت و Type-Safety (وزن ۲۵٪)**: جلوگیری از باگ‌های ران‌تایم و تعریف اینترفیس‌های مقیاس‌پذیر.
-۳. **تخصص در رابط کاربری RTL و Tailwind (وزن ۲۵٪)**: انطباق دقیق با تقویم جلالی، اعداد فارسی و خوانایی فونت وزیرمتن.
-۴. **تست‌نویسی و یکپارچه‌سازی مستمر (وزن ۱۵٪)**: آشنایی با تست‌های واحد و متدولوژی اجایل.
-
-این معیارها در پایگاه داده جهت امتیازدهی به رزومه‌های جدید ذخیره گردیدند.`;
-
-      suggestedActions = [
-        'بارگذاری گروهی ۲۰۰ رزومه جدید برای ارزیابی با این شاخص‌ها',
-        'مشاهده توزیع امتیازات کارجویان فعلی',
-      ];
+      const job = (dbStore.jobs || []).find(j => j.id === (contextJobId || 'job-1')) || dbStore.jobs[0];
+      if (!job || (job.criteria || []).length === 0) {
+        generatedText = `برای موقعیت انتخاب‌شده هنوز معیار ارزیابی ثبت نشده است.`;
+        suggestedActions = ['تعریف موقعیت شغلی جدید با معیارهای وزنی'];
+      } else {
+        const faOrdinals = ['۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸'];
+        const totalWeight = job.criteria.reduce((sum, cr) => sum + (cr.weight || 0), 0);
+        const lines = job.criteria.map((cr, i) =>
+          `${faOrdinals[i] || toPersianDigits(i + 1)}. **${cr.title} (وزن ${toPersianDigits(cr.weight)}٪)**${cr.description ? `: ${cr.description}` : ''}`
+        );
+        generatedText = `موقعیت «${job.title}» بررسی شد و ${toPersianDigits(job.criteria.length)} شاخص کلیدی استخراج گردید (مجموع وزن‌ها: ${toPersianDigits(totalWeight)}٪):\n\n${lines.join('\n')}\n\nاین معیارها مبنای امتیازدهی به رزومه‌های جدید خواهند بود.`;
+        suggestedActions = [
+          'بارگذاری گروهی ۲۰۰ رزومه جدید برای ارزیابی با این شاخص‌ها',
+          'مشاهده توزیع امتیازات کارجویان فعلی',
+        ];
+      }
+    } else if (isScoreResume) {
+      const ranked = (dbStore.candidates || [])
+        .filter(c => c.jobId === (contextJobId || 'job-1'))
+        .slice()
+        .sort((a, b) => (b.overallScore ?? 0) - (a.overallScore ?? 0))
+        .slice(0, 5);
+      if (ranked.length === 0) {
+        generatedText = `برای موقعیت انتخاب‌شده هنوز رزومه‌ای ارزیابی نشده است.`;
+        suggestedActions = ['بارگذاری گروهی ۲۰۰ رزومه جدید برای ارزیابی'];
+      } else {
+        const faOrdinals = ['۱', '۲', '۳', '۴', '۵'];
+        const lines = ranked.map((c, i) => {
+          const parts = [`${faOrdinals[i]}. **${c.fullName}** — امتیاز ${toPersianDigits(c.overallScore ?? '—')} از ۱۰`];
+          if (c.strengths?.[0]) parts.push(`   • نقطه قوت: ${c.strengths[0]}`);
+          if (c.weaknesses?.[0]) parts.push(`   • نیازمند بررسی: ${c.weaknesses[0]}`);
+          if (c.resumeQuotes?.[0]) parts.push(`   • شاهد متنی: ${c.resumeQuotes[0]}`);
+          return parts.join('\n');
+        });
+        generatedText = `رتبه‌بندی ${toPersianDigits(ranked.length)} کارجوی برتر موقعیت بر اساس امتیاز ارزیابی (۱ تا ۱۰):\n\n${lines.join('\n\n')}`;
+        suggestedActions = [
+          'مقایسه نفرات برتر در نمودار رادار',
+          `تنظیم پیش‌نویس دعوت به مصاحبه برای ${ranked[0].fullName}`,
+        ];
+      }
     } else {
       generatedText = `سلام و احترام. من دستیار هوشمند استخدام و ارزیابی شایستگی‌های هلدینگ سیلانه سبز هستم.
 من می‌توانم وظایف زیر را به صورت بلادرنگ برای شما انجام دهم:
@@ -327,6 +412,7 @@ export async function generateJobAd(params: {
 }) {
   const apiKey = process.env.GEMINI_API_KEY;
   const brand = params.brandFocus || 'محصولات آرایشی و بهداشتی هلدینگ سیلانه سبز (دافی، کامان، میس‌ویک)';
+  const perks = Array.isArray(params.perks) ? params.perks : [];
 
   if (apiKey) {
     try {
@@ -345,7 +431,7 @@ export async function generateJobAd(params: {
 نوع همکاری: ${params.workType}
 محل خدمت: ${params.location}
 مهارت‌های کلیدی مورد نیاز: ${params.keySkills || 'مهارت‌های استاندارد متناسب با موقعیت'}
-مزایا و تسهیلات رفاهی: ${params.perks.join('، ') || 'بیمه تکمیلی، پکیج محصولات ماهانه هلدینگ، پاداش عملکرد'}
+مزایا و تسهیلات رفاهی: ${perks.join('، ') || 'بیمه تکمیلی، پکیج محصولات ماهانه هلدینگ، پاداش عملکرد'}
 لحن متن: ${params.tone}
 
 پاسخ شما باید در قالب یک آبجکت JSON معتبر با کلیدهای زیر باشد (فقط JSON معتبر بدون هیچ متن اضافی):
@@ -358,7 +444,7 @@ export async function generateJobAd(params: {
 }`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_MODEL,
         contents: prompt,
         config: {
           responseMimeType: 'application/json',
@@ -375,7 +461,7 @@ export async function generateJobAd(params: {
           recruitmentAdSocial: parsed.recruitmentAdSocial,
           interviewQuestions: parsed.interviewQuestions || [],
           salaryBenchmarkToman: parsed.salaryBenchmarkToman || '۳۵ تا ۴۵ میلیون تومان',
-          perksList: parsed.perksList || params.perks,
+          perksList: parsed.perksList || perks,
         };
       }
     } catch (err) {
@@ -422,7 +508,7 @@ export async function generateJobAd(params: {
 ⏰ نوع همکاری: **${params.workType}**
 
 ✨ **آنچه شما در این نقش تجربه خواهید کرد:**
-${params.perks.map(p => `🎁 ${p}`).join('\n') || '🎁 پکیج ماهانه محصولات اختصاصی برندهای دافی و کامان\n🎁 بیمه تکمیلی درمان جامع\n🎁 پاداش‌های فصلی عملکرد و مسیر رشد شغلی شفاف'}
+${perks.map(p => `🎁 ${p}`).join('\n') || '🎁 پکیج ماهانه محصولات اختصاصی برندهای دافی و کامان\n🎁 بیمه تکمیلی درمان جامع\n🎁 پاداش‌های فصلی عملکرد و مسیر رشد شغلی شفاف'}
 
 🚀 **مهارت‌هایی که همراهی ما را شیرین‌تر می‌کند:**
 ${params.keySkills || 'تخصص بالا، روحیه یادگیری، اشتیاق به کار تیمی و رشد سریع در محیطی پویا'}
@@ -444,7 +530,7 @@ ${params.keySkills || 'تخصص بالا، روحیه یادگیری، اشتی�
       `یک موقعیت تعارض نظری با مدیر یا اعضای تیم را بیان کرده و نحوه حل آن را توضیح دهید.`,
     ],
     salaryBenchmarkToman: '۳۰ الی ۴۸ میلیون تومان (بسته به شایستگی)',
-    perksList: params.perks.length ? params.perks : [
+    perksList: perks.length ? perks : [
       'پکیج ماهانه رایگان محصولات بهداشتی و مراقبت شخصی دافی و کامان',
       'بیمه تکمیلی درجه یک درمان برای پرسنل و افراد تحت تکفل',
       'پاداش عملکرد و بهره‌وری ماهانه',
@@ -485,7 +571,7 @@ export async function processVoiceCommand(command: string) {
 ۸. اگر دستور متفرقه‌ای در حوزه اداری یا منابع انسانی داد، پاسخ متین و راهگشا بدهید.`;
 
       const resp = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: GEMINI_MODEL,
         contents: `دستور صوتی کاربر: "${command}"`,
         config: {
           systemInstruction,
@@ -516,11 +602,10 @@ export async function processVoiceCommand(command: string) {
     }
   } else if (lower.includes('حقوق') || lower.includes('فیش') || lower.includes('بیمه') || lower.includes('مالیات') || lower.includes('دستمزد')) {
     actionType = 'RUN_AUTOMATION_PAYROLL';
-    const payrollTask = dbStore.automationTasks.find(t => t.id === 'auto-payroll');
-    if (payrollTask) {
-      payrollTask.status = 'COMPLETED';
-      payrollTask.lastRunJalali = 'امروز - با دستور صوتی';
-    }
+    // NOTE: no direct store mutation here on purpose. The client executes the
+    // task through POST /api/automation/run based on actionType, which is the
+    // single place where automation side effects happen (mutating here too
+    // would run every voice-triggered automation twice).
     if (!replyText) {
       replyText = 'فرایند خودکار محاسبه حقوق و صدور فیش‌های ماهانه برای ۱۳۵۰ پرسنل هلدینگ سیلانه سبز با اعمال بیمه تامین اجتماعی و معافیت‌های قانونی اجرا و در کارتابل پرسنل ثبت شد.';
     }
@@ -532,11 +617,7 @@ export async function processVoiceCommand(command: string) {
     }
   } else if (lower.includes('رزومه') || lower.includes('غربالگری') || lower.includes('کارجو') || lower.includes('مصاحبه')) {
     actionType = 'RUN_AUTOMATION_SCREENING';
-    const screenTask = dbStore.automationTasks.find(t => t.id === 'auto-screening');
-    if (screenTask) {
-      screenTask.status = 'COMPLETED';
-      screenTask.lastRunJalali = 'امروز - با دستور صوتی';
-    }
+    // NOTE: side effects happen only via POST /api/automation/run (see above).
     if (!replyText) {
       replyText = 'اتوماسیون هوش مصنوعی غربالگری رزومه‌ها اجرا شد. رزومه‌های دریافتی بررسی و امتیازدهی شدند و کارجویان حائز اولویت مصاحبه مشخص گردیدند.';
     }
