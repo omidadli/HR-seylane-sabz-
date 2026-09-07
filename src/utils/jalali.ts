@@ -197,7 +197,7 @@ export function toEnglishDigits(input: string): string {
 export function formatToman(amount: number | string | bigint | undefined | null): string {
   if (amount === undefined || amount === null) return '۰ تومان';
   const num = typeof amount === 'bigint' ? Number(amount) : Number(amount);
-  if (isNaN(num)) return '۰ تومان';
+  if (isNaN(num) || num === 0) return '۰ تومان';
   const formatted = num.toLocaleString('en-US');
   return `${toPersianDigits(formatted)} تومان`;
 }
