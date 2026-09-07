@@ -395,6 +395,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               }}
               onKeyDown={handleKeyDown}
               placeholder="جستجو در تمام بخش‌ها، رزومه‌ها، مشاغل، فیش‌ها و اقدامات هوش مصنوعی..."
+              aria-label="جستجو در تمام بخش‌ها، رزومه‌ها، مشاغل، فیش‌ها و اقدامات هوش مصنوعی"
               className="w-full bg-transparent border-none text-slate-800 text-sm font-semibold placeholder:text-slate-400 focus:outline-none"
             />
             {query && (

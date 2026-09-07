@@ -240,7 +240,7 @@ export const MobilePersonnelPortal: React.FC<MobilePersonnelPortalProps> = ({
                       {toPersianDigits(slip.yearJalali)}
                     </span>
                   </div>
-                  <div className="text-left">
+                  <div className="text-left font-mono dir-ltr">
                     <span className="text-[10px] text-slate-400 block">خالص پرداختی:</span>
                     <span className="text-xs font-black text-emerald-700 font-mono">
                       {formatToman(slip.netSalaryToman)}

@@ -38,7 +38,8 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               key={tab.key}
               type="button"
               onClick={() => onSelectModule(tab.key)}
-              className={`flex flex-col items-center py-1 px-3 rounded-2xl transition-all cursor-pointer ${
+              aria-label={tab.label}
+              className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 px-3 rounded-2xl transition-all cursor-pointer ${
                 isActive
                   ? 'text-emerald-700 font-extrabold'
                   : 'text-slate-500 hover:text-slate-800 font-medium'
@@ -49,7 +50,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                   isActive ? 'bg-emerald-100/90 text-emerald-800 scale-105' : ''
                 }`}
               >
-                <Icon className="w-4 h-4" />
+                <Icon className="w-5 h-5" />
               </div>
               <span className="text-[10px] mt-0.5">{tab.label}</span>
             </button>
@@ -60,10 +61,11 @@ export const BottomNav: React.FC<BottomNavProps> = ({
         <button
           type="button"
           onClick={onOpenMobileMenu}
-          className="flex flex-col items-center py-1 px-3 rounded-2xl text-slate-500 hover:text-slate-800 font-medium transition-all cursor-pointer"
+          aria-label="سایر بخش‌ها"
+          className="flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 px-3 rounded-2xl text-slate-500 hover:text-slate-800 font-medium transition-all cursor-pointer"
         >
           <div className="p-1.5 rounded-xl text-slate-600">
-            <Menu className="w-4 h-4" />
+            <Menu className="w-5 h-5" />
           </div>
           <span className="text-[10px] mt-0.5">سایر بخش‌ها</span>
         </button>

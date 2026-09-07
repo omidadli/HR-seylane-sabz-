@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Candidate, CandidateStage } from '../../types';
 import { toPersianDigits } from '../../utils/jalali';
-import { Award, UserCheck, Search, Mail, ArrowLeft, Star, FileText } from 'lucide-react';
+import { Award, UserCheck, Search, Mail, ArrowRight, Star, FileText } from 'lucide-react';
 
 interface TalentPoolViewProps {
   candidates: Candidate[];
@@ -113,7 +113,7 @@ export const TalentPoolView: React.FC<TalentPoolViewProps> = ({
                 className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1 shadow-2xs"
               >
                 <span>بازگشت به پایپ‌لاین</span>
-                <ArrowLeft className="w-3 h-3" />
+                <ArrowRight className="w-3 h-3" />
               </button>
             </div>
           </div>

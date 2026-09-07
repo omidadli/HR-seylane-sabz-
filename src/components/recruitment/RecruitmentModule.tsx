@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { Candidate, CandidateStage, JobPosting, UserRole } from '../../types';
 import { toPersianDigits } from '../../utils/jalali';
 import { KanbanBoard } from './KanbanBoard';
@@ -79,7 +79,10 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
   const activeJob = jobs.find((j) => j.id === activeJobId) || jobs[0];
 
   // Candidates filtered by selected job (or all)
-  const filteredCandidates = candidates.filter((c) => (activeJobId ? c.jobId === activeJobId : true));
+  const filteredCandidates = useMemo(
+    () => candidates.filter((c) => (activeJobId ? c.jobId === activeJobId : true)),
+    [candidates, activeJobId]
+  );
 
   const handleToggleCompare = (candidate: Candidate) => {
     if (selectedCompareIds.includes(candidate.id)) {

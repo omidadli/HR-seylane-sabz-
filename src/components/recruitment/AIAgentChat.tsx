@@ -176,7 +176,7 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
           return (
             <div
               key={msg.id}
-              className={`flex gap-3 max-w-3xl ${isAgent ? 'mr-0 ml-auto' : 'mr-auto ml-0 flex-row-reverse'}`}
+              className={`flex gap-3 max-w-3xl ${isAgent ? 'ml-0 mr-auto' : 'mr-0 ml-auto flex-row-reverse'}`}
             >
               {/* Avatar */}
               <div
@@ -201,7 +201,7 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
                   <p className="whitespace-pre-wrap font-sans">{msg.text}</p>
 
                   <div
-                    className={`mt-2 text-[10px] text-left font-medium ${
+                    className={`mt-2 text-[10px] text-end font-medium ${
                       isAgent ? 'text-slate-400' : 'text-emerald-200'
                     }`}
                   >

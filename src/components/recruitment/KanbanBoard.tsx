@@ -39,6 +39,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
   selectedCompareIds,
 }) => {
   const [selectedCandidateForDetails, setSelectedCandidateForDetails] = useState<Candidate | null>(null);
+  const [draggedCandidateId, setDraggedCandidateId] = useState<string | null>(null);
+  const [dragOverStage, setDragOverStage] = useState<CandidateStage | null>(null);
 
   const stages: { key: CandidateStage; title: string; color: string; icon: React.ElementType }[] = [
     { key: CandidateStage.INITIAL_SCREENING, title: 'بررسی اولیه', color: 'border-blue-400 bg-blue-50/50', icon: Clock },
@@ -82,11 +84,29 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
         {stages.map((stg) => {
           const Icon = stg.icon;
           const stageCandidates = candidates.filter((c) => c.stage === stg.key);
+          const isDragOver = dragOverStage === stg.key;
 
           return (
             <div
               key={stg.key}
-              className={`rounded-2xl border-t-4 bg-slate-50/80 border p-3 min-h-[480px] flex flex-col shadow-2xs ${stg.color}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                if (dragOverStage !== stg.key) setDragOverStage(stg.key);
+              }}
+              onDragLeave={() => {
+                if (dragOverStage === stg.key) setDragOverStage(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDragOverStage(null);
+                if (draggedCandidateId) {
+                  onMoveStage(draggedCandidateId, stg.key);
+                  setDraggedCandidateId(null);
+                }
+              }}
+              className={`rounded-2xl border-t-4 bg-slate-50/80 border p-3 min-h-[480px] flex flex-col shadow-2xs transition-all ${stg.color} ${
+                isDragOver ? 'ring-2 ring-emerald-500 bg-emerald-50/40 scale-[1.01]' : ''
+              }`}
             >
               {/* Column Header */}
               <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-slate-200">
@@ -107,9 +127,20 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                   return (
                     <div
                       key={cand.id}
-                      className={`bg-white rounded-xl p-3 border shadow-xs transition-all hover:shadow-md relative ${
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggedCandidateId(cand.id);
+                        e.dataTransfer.setData('text/plain', cand.id);
+                      }}
+                      onDragEnd={() => {
+                        setDraggedCandidateId(null);
+                        setDragOverStage(null);
+                      }}
+                      className={`bg-white rounded-xl p-3 border shadow-xs transition-all hover:shadow-md relative cursor-grab active:cursor-grabbing ${
                         isSelectedForCompare
                           ? 'border-emerald-600 ring-2 ring-emerald-500/20'
+                          : draggedCandidateId === cand.id
+                          ? 'opacity-50 border-emerald-400'
                           : 'border-slate-200 hover:border-slate-300'
                       }`}
                     >
