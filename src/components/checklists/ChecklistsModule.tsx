@@ -94,7 +94,7 @@ export const ChecklistsModule: React.FC<ChecklistsModuleProps> = ({
                   {item.title}
                 </div>
                 <div className="text-[11px] text-slate-500">
-                  {item.employeeName} • واحد مسئول: {item.assignedDepartment}
+                  {item.employeeName} • واحد مسئول: {item.department}
                 </div>
               </div>
             </div>

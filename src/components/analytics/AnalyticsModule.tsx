@@ -1,5 +1,5 @@
 import React from 'react';
-import { HRMetrics } from '../../types';
+import { HRDashboardMetrics } from '../../types';
 import { toPersianDigits, formatToman } from '../../utils/jalali';
 import {
   BarChart3,
@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 
 interface AnalyticsModuleProps {
-  metrics: HRMetrics;
+  metrics: HRDashboardMetrics;
 }
 
 export const AnalyticsModule: React.FC<AnalyticsModuleProps> = ({ metrics }) => {
@@ -100,7 +100,7 @@ export const AnalyticsModule: React.FC<AnalyticsModuleProps> = ({ metrics }) => 
             <Users className="w-4 h-4 text-amber-600" />
           </div>
           <div className="text-2xl font-black text-slate-900">
-            {toPersianDigits(metrics.totalActiveEmployees)} نفر
+            {toPersianDigits(metrics.activeHeadcount)} نفر
           </div>
           <div className="text-[11px] text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md inline-block">
             رشد ۱۲٪ در سال جاری

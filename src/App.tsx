@@ -9,7 +9,6 @@ import {
   CandidateStage,
   ChecklistItem,
   Employee,
-  HRMetrics,
   JobPosting,
   LeaveRequest,
   PayrollSlip,
@@ -89,6 +88,7 @@ export default function App() {
     turnoverRatePct: 3.8,
     costPerHireToman: 18500000,
     averageTimeToHireDays: 14,
+    monthlyPayrollTotalToman: 42500000000,
   });
 
   // Fetch initial data from Express backend
@@ -578,6 +578,7 @@ export default function App() {
             </button>
             <div className="p-4 sm:p-6">
               <MobileJobAdGenerator
+                departments={departments}
                 onBack={() => setIsJobAdModalOpen(false)}
                 onJobCreated={(job) => {
                   handleCreateJob(job);

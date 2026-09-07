@@ -20,8 +20,8 @@ export const TalentPoolView: React.FC<TalentPoolViewProps> = ({
   const filtered = poolCandidates.filter(
     (c) =>
       c.fullName.includes(searchTerm) ||
-      c.jobTitle.includes(searchTerm) ||
-      c.talentPoolNotes?.includes(searchTerm)
+      (c.jobTitle ?? '').includes(searchTerm) ||
+      (c.talentPoolNotes?.includes(searchTerm) ?? false)
   );
 
   return (

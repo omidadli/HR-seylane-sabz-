@@ -49,6 +49,7 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<MobileTab>('home');
   const [notificationCount, setNotificationCount] = useState(3);
+  const [jobAdDeptId, setJobAdDeptId] = useState<string | null>(null);
 
   return (
     <div className="w-full min-h-screen bg-slate-100 flex flex-col justify-between text-slate-800 antialiased selection:bg-emerald-200">
@@ -122,8 +123,9 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
             <MobileDepartments
               departments={departments}
               onBack={() => setActiveTab('home')}
-              onSelectDept={(dept) => {
-                console.log('Selected dept:', dept);
+              onSelectDepartmentForJob={(dept) => {
+                setJobAdDeptId(dept.id);
+                setActiveTab('jobAd');
               }}
             />
           )}
@@ -142,6 +144,8 @@ export const MobileAppShell: React.FC<MobileAppShellProps> = ({
           {activeTab === 'jobAd' && (
             <div className="p-3 sm:p-4">
               <MobileJobAdGenerator
+                departments={departments}
+                initialDeptId={jobAdDeptId}
                 onBack={() => setActiveTab('home')}
                 onJobCreated={(job) => {
                   if (onJobCreated) onJobCreated(job);

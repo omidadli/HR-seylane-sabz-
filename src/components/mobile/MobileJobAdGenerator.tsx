@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Sparkles,
   Copy,
@@ -16,21 +16,32 @@ import {
   Gift,
   ArrowRight,
 } from 'lucide-react';
-import { JobAdGenerationRequest, JobAdGenerationResult } from '../../types';
+import { HoldingDepartment, JobAdGenerationRequest, JobAdGenerationResult } from '../../types';
 
 interface MobileJobAdGeneratorProps {
-  departments: any[];
+  departments: HoldingDepartment[];
+  initialDeptId?: string | null;
   onJobCreated?: (newJob: any) => void;
   onBack?: () => void;
 }
 
 export const MobileJobAdGenerator: React.FC<MobileJobAdGeneratorProps> = ({
   departments,
+  initialDeptId,
   onJobCreated,
   onBack,
 }) => {
   const [jobTitle, setJobTitle] = useState('مدیر برند (Brand Manager) - لاین مراقبت پوست');
-  const [selectedDeptId, setSelectedDeptId] = useState(departments[2]?.id || 'dept-mkt');
+  const [selectedDeptId, setSelectedDeptId] = useState(
+    initialDeptId || departments[2]?.id || departments[0]?.id || 'dept-mkt'
+  );
+
+  // Sync when navigating here from a specific department (e.g. "تولید آگهی با AI")
+  useEffect(() => {
+    if (initialDeptId) {
+      setSelectedDeptId(initialDeptId);
+    }
+  }, [initialDeptId]);
   const [seniority, setSeniority] = useState<'کارآموز' | 'کارشناس' | 'کارشناس ارشد' | 'سرپرست' | 'مدیر'>('مدیر');
   const [workType, setWorkType] = useState<'تمام‌وقت' | 'پاره‌وقت' | 'پروژه‌ای' | 'شیفتی کارخانه'>('تمام‌وقت');
   const [location, setLocation] = useState('تهران، خیابان ولیعصر (ستاد مرکزی هلدینگ)');
