@@ -1,6 +1,25 @@
 /**
  * Enterprise HRMS Express Server (سامانه جامع منابع انسانی کارا)
  * Full API Endpoints for all 8 Modules + Gemini AI Recruitment Agent
+ *
+ * PRODUCT-AUDIT FIX PASS (see PRODUCT_BUG_REPORT.md):
+ * - SEC-01/02/03: every mutating or sensitive endpoint is role-gated against
+ *   the SERVER-side session role; employee self-service is scoped to the
+ *   session employee; PII (salary, national id, IBAN) is sanitized per role.
+ * - LEA-01/02/03: statutory leave-balance engine (26 working days, Art. 64;
+ *   9-day carry-over, Art. 66; marriage ≤3 days, Art. 73), server-derived day
+ *   counts, over-quota requests rejected, session-employee attribution.
+ * - PAY-01..PAY-10: payroll moved to server/payroll-service.ts + statutory
+ *   config per Jalali year; DRAFT→FINALIZED→PAID lifecycle with period lock;
+ *   proration, real overtime, eidi cap, correct SSO/tax bases.
+ * - REC-01..05: honest bulk upload (real files only, no RNG scoring), stage
+ *   transition map, HIRED gate (from OFFER + evaluated) which auto-creates the
+ *   employee record and onboarding checklist.
+ * - AIA-01/02: automation runs require HR role + explicit confirm:true;
+ *   LEAVES automation is report-only; voice intents require confirmation.
+ * - LOC-01/02/03: all timestamps use the REAL current Jalali date in
+ *   Asia/Tehran; no hardcoded ۱۴۰۳/۰۶/۱۵ stamps.
+ * - MOD-05: analytics metrics computed from live data.
  */
 
 import express from 'express';
@@ -9,42 +28,127 @@ import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { dbStore } from './server/store';
 import { processAgentChat, generateJobAd, processVoiceCommand, evaluateCandidateWithCriteria } from './server/gemini';
+import { getStatutoryConfig, STATUTORY_YEARS } from './server/statutory';
+import { generatePayrollSlips } from './server/payroll-service';
 import {
+  computeAllLeaveBalances,
+  computeLeaveBalance,
+  validateLeaveRequest,
+} from './server/leave-service';
+import {
+  AttendanceRecord,
   CandidateCategory,
   CandidateStage,
+  ChecklistItem,
+  Employee,
+  LeaveRequest,
   LeaveStatus,
   LeaveType,
   PayrollStatus,
   UserRole,
 } from './src/types';
 import {
-  JALALI_MONTH_NAMES,
+  JalaliDate,
+  addJalaliDays,
   formatJalaliDate,
-  getJalaliMonthDays,
-  getTodayJalali,
+  isValidIranianNationalId,
+  parseJalaliDateString,
   toPersianDigits,
 } from './src/utils/jalali';
+import { tehranNow } from './server/tehran-time';
 
 // Load .env in development (GEMINI_API_KEY, PORT, ...). Real environment
 // variables injected by the host always take precedence over .env values.
 dotenv.config();
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json({ limit: '50mb' }));
+
+  // -----------------------------------------------------------------
+  // Session & RBAC helpers (audit fixes SEC-01/02/03)
+  // -----------------------------------------------------------------
+  const currentRole = (): UserRole => dbStore.currentUserRole;
+  const isHR = (): boolean => currentRole() === UserRole.HR_DIRECTOR;
+
+  /** The demo session user (مهندس کیوان سهرابی) bound to an employee record. */
+  const sessionEmployee = (): Employee | undefined =>
+    dbStore.employees.find(e => e.id === dbStore.sessionEmployeeId);
+
+  /** Department a DEPT_MANAGER is scoped to (derived from the session employee). */
+  const managerDepartment = (): string | null => sessionEmployee()?.department || null;
+
+  function requireRole(...roles: UserRole[]) {
+    return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      if (!roles.includes(currentRole())) {
+        return res.status(403).json({
+          error: 'شما اجازه دسترسی به این عملیات را ندارید',
+          requiredRoles: roles,
+          currentRole: currentRole(),
+        });
+      }
+      next();
+    };
+  }
+
+  const HR_AND_MANAGER = [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER];
+
+  /** Fields hidden from non-HR viewers of OTHER people's records. */
+  const SENSITIVE_FIELDS = [
+    'baseSalaryToman', 'nationalId', 'bankIban', 'birthDateJalali',
+    'ssoContributionDays', 'commuteAllowanceToman',
+  ] as const;
+
+  function sanitizeEmployee(emp: Employee, viewerRole: UserRole, viewerEmployeeId?: string): Employee {
+    if (viewerRole === UserRole.HR_DIRECTOR) return emp;
+    if (emp.id === viewerEmployeeId) return emp; // own record: full access
+    const copy: any = { ...emp };
+    for (const f of SENSITIVE_FIELDS) delete copy[f];
+    if (viewerRole === UserRole.EMPLOYEE) {
+      delete copy.phone;
+      delete copy.email;
+    }
+    return copy as Employee;
+  }
+
+  function canViewEmployeeFully(emp: Employee): boolean {
+    const role = currentRole();
+    if (role === UserRole.HR_DIRECTOR) return true;
+    if (emp.id === dbStore.sessionEmployeeId) return true;
+    if (role === UserRole.DEPT_MANAGER) {
+      const dept = managerDepartment();
+      return !!dept && emp.department === dept;
+    }
+    return false;
+  }
+
+  function employeesVisibleToCurrentRole(): Employee[] {
+    const role = currentRole();
+    if (role === UserRole.HR_DIRECTOR) return dbStore.employees;
+    if (role === UserRole.DEPT_MANAGER) {
+      const dept = managerDepartment();
+      return dbStore.employees.filter(e => e.department === dept || e.id === dbStore.sessionEmployeeId);
+    }
+    // EMPLOYEE: the whole roster is visible for the org chart, but only as
+    // sanitized cards (no salary / national id / IBAN / contact of others).
+    return dbStore.employees;
+  }
 
   // -------------------------------------------------------------
   // Health & Auth Endpoints
   // -------------------------------------------------------------
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString(), platform: 'Kara HRMS Iran' });
+    res.json({ status: 'ok', time: new Date().toISOString(), tehranDateJalali: tehranNow().jalaliString, platform: 'Kara HRMS Iran' });
   });
 
   app.get('/api/auth/me', (req, res) => {
     res.json({
       role: dbStore.currentUserRole,
+      employeeId: dbStore.sessionEmployeeId,
       user: {
         id: 'usr-admin-1',
         fullName: 'مهندس کیوان سهرابی',
@@ -55,11 +159,14 @@ async function startServer() {
     });
   });
 
+  // Demo role switcher is intentionally kept (decision D7): it changes WHO the
+  // session user is, but every endpoint now enforces the resulting role
+  // server-side, so switching to EMPLOYEE genuinely removes HR privileges.
   app.post('/api/auth/switch-role', (req, res) => {
     const { role } = req.body;
     if (Object.values(UserRole).includes(role)) {
       dbStore.currentUserRole = role;
-      res.json({ success: true, newRole: role });
+      res.json({ success: true, newRole: role, employeeId: dbStore.sessionEmployeeId });
     } else {
       res.status(400).json({ error: 'نقش کاربری نامعتبر است' });
     }
@@ -72,30 +179,85 @@ async function startServer() {
     res.json(dbStore.jobs);
   });
 
-  app.post('/api/jobs', (req, res) => {
+  app.post('/api/jobs', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const title = String(req.body.title || '').trim();
+    const department = String(req.body.department || '').trim();
+    if (!title) return res.status(400).json({ error: 'عنوان شغلی الزامی است' });
+    if (!department) return res.status(400).json({ error: 'دپارتمان درخواست‌کننده الزامی است' });
+
+    const criteria = Array.isArray(req.body.criteria) && req.body.criteria.length > 0
+      ? req.body.criteria
+      : [
+          { id: 'c-new-1', title: 'مهارت فنی تخصصی', weight: 40 },
+          { id: 'c-new-2', title: 'سابقه کار مرتبط', weight: 35 },
+          { id: 'c-new-3', title: 'مهارت‌های ارتباطی و تیمی', weight: 25 },
+        ];
+    const weightSum = criteria.reduce((s: number, c: any) => s + (Number(c.weight) || 0), 0);
+    if (Math.abs(weightSum - 100) > 1) {
+      return res.status(400).json({ error: `مجموع وزن شاخص‌ها باید ۱۰۰ باشد (مقدار فعلی: ${weightSum})` });
+    }
+
+    const now = tehranNow();
     const newJob = {
       id: `job-${Date.now()}`,
-      title: req.body.title || 'موقعیت شغلی جدید',
-      department: req.body.department || 'فناوری اطلاعات',
+      title,
+      department,
       employmentType: req.body.employmentType || 'تمام‌وقت',
       location: req.body.location || 'تهران',
       description: req.body.description || '',
       requirements: req.body.requirements || '',
       status: 'ACTIVE' as const,
-      createdAtJalali: req.body.createdAtJalali || '۱۴۰۳/۰۶/۱۵',
+      createdAtJalali: now.jalaliString,
       applicationsCount: 0,
-      criteria: req.body.criteria || [
-        { id: 'c-new-1', title: 'مهارت فنی تخصصی', weight: 40 },
-        { id: 'c-new-2', title: 'سابقه کار مرتبط', weight: 35 },
-        { id: 'c-new-3', title: 'مهارت‌های ارتباطی و تیمی', weight: 25 },
-      ],
+      criteria,
     };
     dbStore.jobs.unshift(newJob);
+    dbStore.markDirty();
     res.status(201).json(newJob);
   });
 
+  app.patch('/api/jobs/:id', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const job = dbStore.jobs.find(j => j.id === req.params.id);
+    if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
+    const { title, department, employmentType, location, description, requirements, status } = req.body;
+    if (title !== undefined) {
+      if (!String(title).trim()) return res.status(400).json({ error: 'عنوان شغلی نمی‌تواند خالی باشد' });
+      job.title = String(title).trim();
+    }
+    if (department !== undefined) job.department = String(department).trim() || job.department;
+    if (employmentType !== undefined) job.employmentType = employmentType;
+    if (location !== undefined) job.location = location;
+    if (description !== undefined) job.description = description;
+    if (requirements !== undefined) job.requirements = requirements;
+    if (status !== undefined) {
+      if (!['ACTIVE', 'DRAFT', 'ARCHIVED'].includes(status)) {
+        return res.status(400).json({ error: 'وضعیت نامعتبر است (ACTIVE/DRAFT/ARCHIVED)' });
+      }
+      job.status = status;
+    }
+    dbStore.markDirty();
+    res.json(job);
+  });
+
+  // Deleting a job posting with linked candidates would orphan their pipeline
+  // history (audit SEC-04) — blocked; archive instead.
+  app.delete('/api/jobs/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const idx = dbStore.jobs.findIndex(j => j.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
+    const linked = dbStore.candidates.filter(c => c.jobId === req.params.id).length;
+    if (linked > 0) {
+      return res.status(409).json({
+        error: `این موقعیت شغلی ${toPersianDigits(linked)} کارجوی پیوسته دارد و قابل حذف نیست`,
+        suggestion: 'به جای حذف، وضعیت موقعیت را به ARCHIVED تغییر دهید (PATCH /api/jobs/:id).',
+      });
+    }
+    dbStore.jobs.splice(idx, 1);
+    dbStore.markDirty();
+    res.json({ success: true, deletedId: req.params.id });
+  });
+
   // Update evaluation criteria, weights, calculation method and instructions for a specific job
-  app.put('/api/jobs/:id/criteria', (req, res) => {
+  app.put('/api/jobs/:id/criteria', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const {
       criteria,
@@ -110,18 +272,36 @@ async function startServer() {
     if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
 
     if (Array.isArray(criteria)) {
+      const weightSum = criteria.reduce((s: number, c: any) => s + (Number(c.weight) || 0), 0);
+      if (criteria.length > 0 && Math.abs(weightSum - 100) > 1) {
+        return res.status(400).json({ error: `مجموع وزن شاخص‌ها باید ۱۰۰ باشد (مقدار فعلی: ${weightSum})` });
+      }
       job.criteria = criteria;
     }
     if (scoringMethod) job.scoringMethod = scoringMethod;
     if (aiRigor) job.aiRigor = aiRigor;
     if (evaluationInstructions !== undefined) job.evaluationInstructions = evaluationInstructions;
     if (typeof interviewPriorityThreshold === 'number') {
+      if (interviewPriorityThreshold < 0 || interviewPriorityThreshold > 10) {
+        return res.status(400).json({ error: 'حد نصاب اولویت مصاحبه باید بین ۰ تا ۱۰ باشد' });
+      }
       job.interviewPriorityThreshold = interviewPriorityThreshold;
     }
     if (typeof initialRejectionThreshold === 'number') {
+      if (initialRejectionThreshold < 0 || initialRejectionThreshold > 10) {
+        return res.status(400).json({ error: 'حد نصاب رد اولیه باید بین ۰ تا ۱۰ باشد' });
+      }
       job.initialRejectionThreshold = initialRejectionThreshold;
     }
+    if (
+      typeof job.interviewPriorityThreshold === 'number' &&
+      typeof job.initialRejectionThreshold === 'number' &&
+      job.initialRejectionThreshold >= job.interviewPriorityThreshold
+    ) {
+      return res.status(400).json({ error: 'حد نصاب رد اولیه باید کمتر از حد نصاب اولویت مصاحبه باشد' });
+    }
 
+    dbStore.markDirty();
     res.json({
       success: true,
       message: 'شاخصه‌ها، وزن‌دهی و متد ارزیابی هوش مصنوعی با موفقیت بروزرسانی شد',
@@ -130,7 +310,7 @@ async function startServer() {
   });
 
   // Dynamic AI evaluation of a candidate resume against job criteria
-  app.post('/api/jobs/evaluate-candidate', async (req, res) => {
+  app.post('/api/jobs/evaluate-candidate', requireRole(...HR_AND_MANAGER), async (req, res) => {
     try {
       const {
         candidateId,
@@ -151,10 +331,19 @@ async function startServer() {
       let targetJob = dbStore.jobs.find(j => j.id === jobId);
       let targetCandidate = candidateId ? dbStore.candidates.find(c => c.id === candidateId) : null;
 
+      const evalResumeText = String(resumeText ?? targetCandidate?.resumeText ?? '').trim();
+      // Audit REC-05/D4: an empty resume must NEVER receive a score — there is
+      // nothing to evaluate. Previously it produced a fabricated 7.0.
+      if (evalResumeText.length < 20) {
+        return res.status(400).json({
+          error: 'متن رزومه برای ارزیابی موجود نیست یا بیش از حد کوتاه است',
+          hint: 'ابتدا محتوای رزومه استخراج و ثبت شود؛ امتیازدهی بدون متن رزومه ممکن نیست.',
+        });
+      }
+
       const evalJobTitle = jobTitle || targetJob?.title || 'موقعیت شغلی سازمانی';
       const evalDepartment = department || targetJob?.department || 'منابع انسانی';
       const evalCandidateName = candidateName || targetCandidate?.fullName || 'کارجوی متقاضی';
-      const evalResumeText = resumeText || targetCandidate?.resumeText || 'متن رزومه برای ارزیابی';
       const evalCriteria = criteria || targetJob?.criteria || [];
       const evalScoringMethod = scoringMethod || targetJob?.scoringMethod || 'WEIGHTED_AVG';
       const evalAiRigor = aiRigor || targetJob?.aiRigor || 'BALANCED';
@@ -183,6 +372,9 @@ async function startServer() {
         targetCandidate.strengths = result.strengths;
         targetCandidate.weaknesses = result.weaknesses;
         targetCandidate.resumeQuotes = result.resumeQuotes;
+        (targetCandidate as any).evaluatedAtJalali = tehranNow().jalaliString;
+        (targetCandidate as any).aiAvailable = (result as any).aiAvailable !== false;
+        dbStore.markDirty();
       }
 
       res.json(result);
@@ -202,31 +394,69 @@ async function startServer() {
     res.json(list);
   });
 
-  app.post('/api/candidates', (req, res) => {
+  app.post('/api/candidates', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const fullName = String(req.body.fullName || '').trim();
+    const email = String(req.body.email || '').trim();
+    const jobId = req.body.jobId;
+    const job = dbStore.jobs.find(j => j.id === jobId);
+    if (!fullName) return res.status(400).json({ error: 'نام و نام خانوادگی کارجو الزامی است' });
+    if (!job) return res.status(400).json({ error: 'موقعیت شغلی انتخاب‌شده وجود ندارد' });
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'رایانامه کارجو نامعتبر است' });
+
+    // Audit REC-05: no fabricated default score (previously every new
+    // candidate was born with 7.5 / INTERVIEW_PRIORITY). A candidate starts
+    // UNSCORED until a real evaluation runs.
+    const scoreRaw = Number(req.body.overallScore);
+    const hasScore = Number.isFinite(scoreRaw) && scoreRaw >= 0 && scoreRaw <= 10;
+
     const newCand = {
       id: `cand-${Date.now()}`,
-      jobId: req.body.jobId || 'job-1',
-      jobTitle: req.body.jobTitle || 'کارشناس ارشد توسعه فرانت‌اند',
-      fullName: req.body.fullName || 'کارجوی جدید',
-      email: req.body.email || 'applicant@example.com',
-      phone: req.body.phone || '09120000000',
-      resumeFileName: req.body.resumeFileName || 'Resume.pdf',
-      resumeText: req.body.resumeText || '',
-      overallScore: req.body.overallScore || 7.5,
-      category: req.body.category || CandidateCategory.INTERVIEW_PRIORITY,
+      jobId: job.id,
+      jobTitle: job.title,
+      fullName,
+      email,
+      phone: String(req.body.phone || '').trim(),
+      resumeFileName: req.body.resumeFileName || '',
+      resumeText: String(req.body.resumeText || ''),
+      overallScore: hasScore ? scoreRaw : undefined,
+      category: hasScore
+        ? (req.body.category as CandidateCategory) || CandidateCategory.NEEDS_REVIEW
+        : undefined,
       stage: CandidateStage.INITIAL_SCREENING,
-      strengths: req.body.strengths || ['تسلط خوب بر ابزارهای مدرن'],
-      weaknesses: req.body.weaknesses || ['نیازمند ارزیابی فنی تکمیلی'],
-      resumeQuotes: req.body.resumeQuotes || ['«سابقه کار در پروژه‌های مقیاس‌پذیر»'],
-      criteriaScores: req.body.criteriaScores || { 'مهارت فنی': 8, 'ارتباطات': 7 },
+      strengths: Array.isArray(req.body.strengths) ? req.body.strengths : [],
+      weaknesses: Array.isArray(req.body.weaknesses) ? req.body.weaknesses : [],
+      resumeQuotes: Array.isArray(req.body.resumeQuotes) ? req.body.resumeQuotes : [],
+      criteriaScores: req.body.criteriaScores || {},
       inTalentPool: false,
-      appliedAtJalali: '۱۴۰۳/۰۶/۱۵',
+      appliedAtJalali: tehranNow().jalaliString,
     };
     dbStore.candidates.unshift(newCand);
+    job.applicationsCount += 1;
+    dbStore.markDirty();
     res.status(201).json(newCand);
   });
 
-  app.patch('/api/candidates/:id/stage', (req, res) => {
+  // Legal stage flow (audit REC-04): no teleporting to HIRED/OFFER, and HIRED
+  // requires a completed evaluation (audit REC-02 flow gap).
+  const STAGE_TRANSITIONS: Record<CandidateStage, CandidateStage[]> = {
+    [CandidateStage.INITIAL_SCREENING]: [CandidateStage.PHONE_INTERVIEW, CandidateStage.IN_PERSON_INTERVIEW, CandidateStage.REJECTED],
+    [CandidateStage.PHONE_INTERVIEW]: [CandidateStage.IN_PERSON_INTERVIEW, CandidateStage.OFFER, CandidateStage.REJECTED],
+    [CandidateStage.IN_PERSON_INTERVIEW]: [CandidateStage.OFFER, CandidateStage.REJECTED],
+    [CandidateStage.OFFER]: [CandidateStage.HIRED, CandidateStage.REJECTED],
+    [CandidateStage.HIRED]: [],
+    [CandidateStage.REJECTED]: [CandidateStage.INITIAL_SCREENING],
+  };
+
+  const STAGE_LABELS: Record<CandidateStage, string> = {
+    [CandidateStage.INITIAL_SCREENING]: 'بررسی اولیه',
+    [CandidateStage.PHONE_INTERVIEW]: 'مصاحبه تلفنی',
+    [CandidateStage.IN_PERSON_INTERVIEW]: 'مصاحبه حضوری',
+    [CandidateStage.OFFER]: 'پیشنهاد همکاری',
+    [CandidateStage.HIRED]: 'استخدام شده',
+    [CandidateStage.REJECTED]: 'رد شده',
+  };
+
+  app.patch('/api/candidates/:id/stage', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const { stage } = req.body;
     if (!Object.values(CandidateStage).includes(stage)) {
@@ -234,55 +464,173 @@ async function startServer() {
     }
     const cand = dbStore.candidates.find(c => c.id === id);
     if (!cand) return res.status(404).json({ error: 'کارجو یافت نشد' });
+
+    const allowed = STAGE_TRANSITIONS[cand.stage] || [];
+    if (stage !== cand.stage && !allowed.includes(stage)) {
+      return res.status(409).json({
+        error: `انتقال از «${STAGE_LABELS[cand.stage]}» به «${STAGE_LABELS[stage as CandidateStage]}» مجاز نیست`,
+        allowedTransitions: allowed.map(s => STAGE_LABELS[s]),
+      });
+    }
+
+    // HIRED gate (audit REC-02): a candidate may only be hired from OFFER,
+    // with a completed evaluation and valid contact data — and hiring now
+    // actually creates the employee record + onboarding checklist (the flow
+    // previously dead-ended at HIRED).
+    if (stage === CandidateStage.HIRED && cand.stage !== CandidateStage.HIRED) {
+      const evaluated =
+        typeof cand.overallScore === 'number' &&
+        !!cand.criteriaScores && Object.keys(cand.criteriaScores).length > 0;
+      if (!evaluated) {
+        return res.status(409).json({
+          error: 'ارزیابی کارجو تکمیل نشده است (نمره و امتیاز شاخص‌ها ثبت نشده)',
+          hint: 'پیش از استخدام، رزومه را با «ارزیابی هوش مصنوعی» امتیازدهی کنید.',
+        });
+      }
+      if (!EMAIL_RE.test(cand.email || '')) {
+        return res.status(409).json({ error: 'رایانامه کارجو برای صدور قرارداد نامعتبر است' });
+      }
+      const job = dbStore.jobs.find(j => j.id === cand.jobId);
+      if (!job) {
+        return res.status(409).json({ error: 'موقعیت شغلی مرتبط با کارجو یافت نشد' });
+      }
+
+      cand.stage = CandidateStage.HIRED;
+      const now = tehranNow();
+
+      // --- Auto-create the employee record (onboarding entry point) ---
+      const existingCodes = new Set(dbStore.employees.map(e => e.personnelCode));
+      let personnelCode = '';
+      do {
+        personnelCode = toPersianDigits(`10${Math.floor(100 + Math.random() * 900)}`);
+      } while (existingCodes.has(personnelCode));
+
+      const newEmp: Employee = {
+        id: `emp-hired-${Date.now()}`,
+        personnelCode,
+        nationalId: '', // collected during onboarding (checklist item below)
+        fullName: cand.fullName,
+        birthDateJalali: '',
+        phone: cand.phone || '',
+        email: cand.email,
+        department: job.department,
+        jobTitle: job.title,
+        hireDateJalali: now.jalaliString,
+        baseSalaryToman: 0, // HR must set the contracted salary before payroll
+        maritalStatus: 'SINGLE',
+        childrenCount: 0,
+        bankIban: '',
+        status: 'ACTIVE',
+        documents: [],
+        jobHistories: [
+          {
+            id: `jh-${Date.now()}`,
+            changeType: 'PROMOTION',
+            previousTitle: '—',
+            newTitle: job.title,
+            effectiveDateJalali: now.jalaliString,
+            description: `استخدام از مسیر جذب کارجو (پرونده ${cand.id})`,
+          },
+        ],
+        ssoContributionDays: 0,
+        commuteAllowanceToman: 0,
+      };
+      dbStore.employees.push(newEmp);
+
+      // --- Auto-create the onboarding checklist ---
+      const due = formatJalaliDate(addJalaliDays(now.jalali, 7), true);
+      const onboardingTitles = [
+        'صدور قرارداد کار و امضای الکترونیکی',
+        'جمع‌آوری مدارک هویتی (کد ملی، شناسنامه، کارت پایان خدمت)',
+        'ثبت شماره شبا (IBAN) جهت واریز حقوق',
+        'معرفی به سازمان تامین اجتماعی و صدور شماره بیمه',
+        'معارفه با تیم و تعیین منتور (Onboarding Buddy)',
+      ];
+      const createdChecklistItems: ChecklistItem[] = onboardingTitles.map((title, i) => ({
+        id: `chk-hired-${Date.now()}-${i}`,
+        employeeId: newEmp.id,
+        employeeName: newEmp.fullName,
+        type: 'ONBOARDING',
+        title,
+        department: newEmp.department,
+        dueDateJalali: due,
+        isCompleted: false,
+      }));
+      dbStore.checklistItems.unshift(...createdChecklistItems);
+      dbStore.markDirty();
+
+      return res.json({
+        ...cand,
+        createdEmployee: newEmp,
+        createdChecklistItems,
+        message: 'کارجو استخدام شد؛ پرونده پرسنلی و چک‌لیست آنبوردینگ به صورت خودکار ایجاد گردید. تکمیل حقوق پایه و کد ملی پیش از اولین فیش حقوقی الزامی است.',
+      });
+    }
+
     cand.stage = stage;
+    dbStore.markDirty();
     res.json(cand);
   });
 
-  app.patch('/api/candidates/:id/talent-pool', (req, res) => {
+  app.patch('/api/candidates/:id/talent-pool', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const { inTalentPool, notes } = req.body;
     const cand = dbStore.candidates.find(c => c.id === id);
     if (!cand) return res.status(404).json({ error: 'کارجو یافت نشد' });
+    if (typeof inTalentPool !== 'boolean') {
+      return res.status(400).json({ error: 'وضعیت استخر استعداد نامعتبر است' });
+    }
     cand.inTalentPool = inTalentPool;
     if (notes) cand.talentPoolNotes = notes;
+    dbStore.markDirty();
     res.json(cand);
   });
 
-  app.post('/api/candidates/:id/schedule-interview', (req, res) => {
+  app.post('/api/candidates/:id/schedule-interview', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const { interviewJalali, interviewType, interviewNotes } = req.body;
     const cand = dbStore.candidates.find(c => c.id === id);
     if (!cand) return res.status(404).json({ error: 'کارجو یافت نشد' });
+    if (!parseJalaliDateString(interviewJalali)) {
+      return res.status(400).json({ error: 'تاریخ مصاحبه نامعتبر است (قالب معتبر: ۱۴۰۳/۰۶/۱۵)' });
+    }
     cand.interviewJalali = interviewJalali;
     cand.interviewType = interviewType;
     cand.interviewNotes = interviewNotes;
-    cand.stage = CandidateStage.IN_PERSON_INTERVIEW;
+    // Only advance the stage forward — never drag an OFFER/HIRED candidate
+    // back to interview stage (previous code overwrote the stage blindly).
+    if (
+      cand.stage === CandidateStage.INITIAL_SCREENING ||
+      cand.stage === CandidateStage.PHONE_INTERVIEW
+    ) {
+      cand.stage = CandidateStage.IN_PERSON_INTERVIEW;
+    }
+    dbStore.markDirty();
     res.json(cand);
   });
 
-  // Minimal Persian->Latin map so generated seed e-mails are valid ASCII.
-  // (Persian script in the local part, e.g. 'یاسمین.غفاری@example.com', is not a valid e-mail.)
-  const faNameLatin: Record<string, string> = {
-    'سینا': 'sina', 'الناز': 'elnaz', 'پویان': 'pouyan', 'بهار': 'bahar',
-    'حامد': 'hamed', 'رکسانا': 'roksana', 'فرزاد': 'farzad', 'سوگند': 'sougand',
-    'مهراد': 'mehrad', 'یاسمین': 'yasamin', 'آرش': 'arash', 'ترانه': 'taraneh',
-    'نوید': 'navid', 'مینا': 'mina', 'کاظمی': 'kazemi', 'رحیمی': 'rahimi',
-    'طاهری': 'taheri', 'غفاری': 'ghafari', 'صادقی': 'sadeghi', 'حسینی': 'hosseini',
-    'میرزایی': 'mirzaei', 'کریمی': 'karimi', 'افشار': 'afshar', 'نوری': 'nouri',
-    'باقری': 'bagheri', 'شریفی': 'sharifi',
-  };
-  const latinName = (fa: string, fallback: string): string => faNameLatin[fa] || fallback;
-
+  // Bulk resume upload — MERGED: upstream real-resume-screening (client-side
+  // text extraction + real AI scoring via evaluateCandidateWithCriteria) with
+  // the audit remediation guards (REC-01/02/08, SEC-01, LOC-02, D4/D5):
+  // - HR_DIRECTOR only (server-enforced RBAC).
+  // - Only real files whose text was actually extracted client-side are scored;
+  //   unparseable files (e.g. scanned/image PDFs) are skipped WITH a reason —
+  //   never faked, never randomly scored.
+  // - Scores come from Gemini when GEMINI_API_KEY is present; otherwise from
+  //   the deterministic local engine and every result is labeled
+  //   aiAvailable:false (D4) so the UI can show the honest source.
+  // - Per D5 the AI never auto-moves pipeline stages: every imported candidate
+  //   starts at INITIAL_SCREENING; the category (even INITIAL_REJECTION) is an
+  //   advisory badge for human review, not an automatic rejection.
+  // - No fabricated identities: email/phone stay blank until real parsed data.
+  // - Timestamps come from the single Asia/Tehran source (LOC-02).
   const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
-    // Clean extensions and common prefixes
     let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
     clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
-    clean = clean.replace(/[\-_]/g, ' ').trim();
+    clean = clean.replace(/[-_]/g, ' ').trim();
     // If the filename carries a real, meaningful name, use it — otherwise fall
     // back to a plain, honest placeholder label (never a fabricated identity).
-    if (clean.length >= 3 && !/^\d+$/.test(clean)) {
-      return clean;
-    }
+    if (clean.length >= 3 && !/^\d+$/.test(clean)) return clean;
     return `متقاضی شماره ${index + 1}`;
   };
 
@@ -305,28 +653,38 @@ async function startServer() {
     return results;
   }
 
-  // Real AI-powered bulk resume screening. Every candidate is scored by
-  // actually sending their extracted resume text to Gemini against the
-  // job's evaluation criteria — no random/simulated scores.
-  app.post('/api/candidates/bulk-upload', async (req, res) => {
+  app.post('/api/candidates/bulk-upload', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
     try {
       const { jobId, files } = req.body;
-      const targetJob = dbStore.jobs.find(j => j.id === jobId) || dbStore.jobs[0];
-
+      const targetJob = dbStore.jobs.find(j => j.id === jobId);
+      if (!targetJob) {
+        return res.status(400).json({ error: 'موقعیت شغلی هدف برای بارگذاری رزومه‌ها مشخص نیست' });
+      }
       const incomingFiles: Array<{ name: string; size?: number; text?: string; sourceZip?: string }> =
         Array.isArray(files) ? files : [];
+      if (incomingFiles.length === 0) {
+        return res.status(400).json({
+          error: 'هیچ فایل رزومه‌ای ارسال نشد',
+          hint: 'حالت شبیه‌سازی (تولید کارجوی تصادفی بدون فایل واقعی) از سامانه حذف شده است. لطفاً فایل‌های واقعی رزومه را بارگذاری کنید.',
+        });
+      }
 
       // Only resumes whose text was actually extracted client-side can be
       // scored by the AI. Files that failed extraction (e.g. scanned/image
-      // PDFs with no selectable text) are reported back, not faked.
+      // PDFs with no selectable text) are reported back with a reason, not faked.
       const MIN_TEXT_LENGTH = 30;
-      const validFiles = incomingFiles.filter(f => typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH);
-      const skippedFiles = incomingFiles.filter(f => !(typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH));
+      const hasText = (f: { text?: string }) => typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH;
+      const validFiles = incomingFiles.filter(hasText);
+      const skipped = incomingFiles.filter(f => !hasText(f)).map(f => ({
+        name: f.name,
+        reason: 'متن رزومه استخراج نشد (فایل اسکن‌شده/تصویری یا بدون متن قابل‌خواندن) — بدون متن واقعی، امتیازی تولید نمی‌شود',
+      }));
 
       if (validFiles.length === 0) {
         return res.status(400).json({
           error: 'هیچ متن قابل‌استخراجی از رزومه‌های ارسالی یافت نشد. لطفاً از فایل‌های PDF/Word متنی (نه اسکن تصویری) استفاده کنید.',
-          skippedCount: skippedFiles.length,
+          skippedCount: skipped.length,
+          skipped,
         });
       }
 
@@ -356,35 +714,35 @@ async function startServer() {
         return { file, fullName, result };
       });
 
-      const nowJalali = toPersianDigits(new Date().toLocaleDateString('fa-IR'));
-
-      const newCandidatesBatch = evaluations.map(({ file, fullName, result }, i) => {
-        const fnPart = fullName.split(' ')[0] || 'applicant';
-        const lnPart = fullName.split(' ')[1] || 'resume';
-        return {
-          id: `cand-bulk-${Date.now()}-${i}`,
-          jobId: targetJob.id,
-          jobTitle: targetJob.title,
-          fullName,
-          email: `${latinName(fnPart, 'applicant')}.${latinName(lnPart, 'seilaneh')}.${Date.now().toString(36)}${i}@example.com`,
-          phone: '', // Real contact info isn't reliably present/parsed yet; left blank rather than fabricated.
-          resumeFileName: file.name,
-          resumeText: file.text as string,
-          overallScore: result.overallScore,
-          category: result.category,
-          stage: result.category === CandidateCategory.INTERVIEW_PRIORITY
-            ? CandidateStage.INITIAL_SCREENING
-            : (result.category === CandidateCategory.INITIAL_REJECTION ? CandidateStage.REJECTED : CandidateStage.INITIAL_SCREENING),
-          strengths: result.strengths,
-          weaknesses: result.weaknesses,
-          resumeQuotes: result.resumeQuotes,
-          criteriaScores: result.criteriaScores,
-          criteriaFeedback: result.criteriaFeedback,
-          executiveSummary: result.executiveSummary,
-          inTalentPool: result.category === CandidateCategory.INITIAL_REJECTION && result.overallScore >= 4.5,
-          appliedAtJalali: nowJalali,
-        };
-      });
+      const now = tehranNow();
+      const newCandidatesBatch = evaluations.map(({ file, fullName, result }, i) => ({
+        id: `cand-bulk-${Date.now()}-${i}`,
+        jobId: targetJob.id,
+        jobTitle: targetJob.title,
+        fullName,
+        // No fabricated identities (REC-08): contact fields stay blank until
+        // real parsed/entered data exists.
+        email: '',
+        phone: '',
+        resumeFileName: file.name,
+        resumeText: file.text as string,
+        overallScore: result.overallScore,
+        category: result.category,
+        // D5: category is an advisory badge; the stage never auto-moves —
+        // no automatic REJECTED stage from AI/local scoring.
+        stage: CandidateStage.INITIAL_SCREENING,
+        strengths: result.strengths,
+        weaknesses: result.weaknesses,
+        resumeQuotes: result.resumeQuotes,
+        criteriaScores: result.criteriaScores,
+        criteriaFeedback: result.criteriaFeedback,
+        executiveSummary: result.executiveSummary,
+        // Honest labeling (D4): false = deterministic local engine, not live AI.
+        aiAvailable: result.aiAvailable !== false,
+        inTalentPool: result.category === CandidateCategory.INITIAL_REJECTION && result.overallScore >= 4.5,
+        appliedAtJalali: now.jalaliString,
+        sourceZip: file.sourceZip,
+      }));
 
       // Store the processed batch. A global cap keeps the in-memory store
       // bounded; when the cap is hit the oldest bulk-imported candidates are
@@ -403,16 +761,23 @@ async function startServer() {
         }
       }
       targetJob.applicationsCount += newCandidatesBatch.length;
+      dbStore.markDirty();
 
+      const usedLocalEngine = newCandidatesBatch.some(c => c.aiAvailable === false);
       res.json({
         success: true,
         processedCount: newCandidatesBatch.length,
-        skippedCount: skippedFiles.length,
-        skippedFiles: skippedFiles.map(f => f.name),
+        skippedCount: skipped.length,
+        skipped,
+        skippedFiles: skipped.map(x => x.name),
+        aiAvailable: !usedLocalEngine,
         interviewPriorityCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INTERVIEW_PRIORITY).length,
         needsReviewCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.NEEDS_REVIEW).length,
         initialRejectionCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INITIAL_REJECTION).length,
         sampleCandidates: newCandidatesBatch.slice(0, 5),
+        message: usedLocalEngine
+          ? `${toPersianDigits(newCandidatesBatch.length)} رزومه با موتور ارزیابی محلی (بدون Gemini) امتیازدهی و ثبت شد — نتایج با برچسب «موتور محلی» نمایش داده می‌شود. دسته‌بندی‌ها پیشنهادی است و مرحله هیچ کارجویی خودکار تغییر نکرد.`
+          : `${toPersianDigits(newCandidatesBatch.length)} رزومه ارزیابی و ثبت شد. دسته‌بندی‌ها پیشنهادی است و مرحله هیچ کارجویی خودکار تغییر نکرد.`,
       });
     } catch (err: any) {
       console.error('Bulk resume screening error:', err);
@@ -423,8 +788,12 @@ async function startServer() {
   // AI Agent Chat with Gemini Function Calling
   app.post('/api/ai/chat', async (req, res) => {
     try {
-      const { message, jobId } = req.body;
-      const agentResponse = await processAgentChat(message, jobId);
+      const { message, jobId, history } = req.body;
+      if (!message || !String(message).trim()) {
+        return res.status(400).json({ error: 'متن پیام خالی است' });
+      }
+      const agentResponse = await processAgentChat(String(message), jobId, Array.isArray(history) ? history : []);
+      if ((agentResponse as any).mutatedStore) dbStore.markDirty();
       res.json(agentResponse);
     } catch (err: any) {
       console.error('Agent chat error:', err);
@@ -437,14 +806,17 @@ async function startServer() {
   // -------------------------------------------------------------
   // 1. HireVue: Video Interviews & Rubrics
   app.get('/api/competitor/hirevue/submissions', (req, res) => {
-    res.json(dbStore.videoSubmissions);
+    res.json(dbStore.videoSubmissions || []);
   });
 
   app.get('/api/competitor/hirevue/questions', (req, res) => {
-    res.json(dbStore.videoQuestions);
+    res.json(dbStore.videoQuestions || []);
   });
 
-  app.post('/api/competitor/hirevue/evaluate-submission', (req, res) => {
+  // Video-interview simulator (demo module): creates a simulated submission
+  // record. Scores here are explicitly simulator output (the module is a
+  // HireVue-style demo), stamped with the real current date.
+  app.post('/api/competitor/hirevue/evaluate-submission', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateName, jobTitle, brand, simulatedTranscript } = req.body;
     const newSubmission = {
       id: `vis-${Date.now()}`,
@@ -453,7 +825,7 @@ async function startServer() {
       jobId: 'job-1',
       jobTitle: jobTitle || 'کارشناس ارشد سازمان',
       brand: brand || 'هلدینگ سیلانه سبز',
-      submittedAtJalali: 'امروز - لحظاتی پیش',
+      submittedAtJalali: `${tehranNow().jalaliString} - لحظاتی پیش`,
       status: 'COMPLETED' as const,
       overallScore: Math.floor(82 + Math.random() * 16),
       confidenceScore: Math.floor(80 + Math.random() * 18),
@@ -475,6 +847,7 @@ async function startServer() {
       ],
     };
     dbStore.videoSubmissions.unshift(newSubmission);
+    dbStore.markDirty();
     res.status(201).json(newSubmission);
   });
 
@@ -492,12 +865,13 @@ async function startServer() {
     res.json(dbStore.sourcedCandidates);
   });
 
-  app.post('/api/competitor/ziprecruiter/invite', (req, res) => {
+  app.post('/api/competitor/ziprecruiter/invite', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateId } = req.body;
     const target = dbStore.sourcedCandidates.find(c => c.id === candidateId);
     if (target) {
       target.status = 'INVITED';
-      target.invitedAtJalali = 'امروز - لحظاتی پیش';
+      target.invitedAtJalali = `${tehranNow().jalaliString} - لحظاتی پیش`;
+      dbStore.markDirty();
       res.json({ success: true, candidate: target });
     } else {
       res.status(404).json({ error: 'کارجوی سورس‌شده یافت نشد' });
@@ -508,15 +882,16 @@ async function startServer() {
     res.json(dbStore.syndicationChannels);
   });
 
-  app.post('/api/competitor/ziprecruiter/toggle-syndication', (req, res) => {
+  app.post('/api/competitor/ziprecruiter/toggle-syndication', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { channelId, status } = req.body;
     const channel = dbStore.syndicationChannels.find(c => c.id === channelId);
     if (channel) {
       channel.status = status;
-      channel.lastSyncJalali = 'امروز - لحظاتی پیش';
+      channel.lastSyncJalali = `${tehranNow().jalaliString} - لحظاتی پیش`;
       if (status === 'ACTIVE') {
         channel.impressionsCount += Math.floor(100 + Math.random() * 300);
       }
+      dbStore.markDirty();
       res.json({ success: true, channel });
     } else {
       res.status(404).json({ error: 'کانال انتشار یافت نشد' });
@@ -527,21 +902,22 @@ async function startServer() {
     res.json(dbStore.knockoutQuestions);
   });
 
-  app.post('/api/competitor/ziprecruiter/knockout-questions', (req, res) => {
+  app.post('/api/competitor/ziprecruiter/knockout-questions', requireRole(...HR_AND_MANAGER), (req, res) => {
+    if (!req.body.question || !String(req.body.question).trim()) {
+      return res.status(400).json({ error: 'متن سوال حذفی الزامی است' });
+    }
     const newKq = {
       id: `kq-${Date.now()}`,
-      question: req.body.question || 'سوال حذفی جدید',
+      question: String(req.body.question).trim(),
       requiredAnswer: req.body.requiredAnswer ?? true,
       isDealBreaker: req.body.isDealBreaker ?? true,
       explanation: req.body.explanation || 'الزام فرآیندی کارخانجات سیلانه سبز',
     };
     dbStore.knockoutQuestions.push(newKq);
+    dbStore.markDirty();
     res.status(201).json(newKq);
   });
 
-  // -------------------------------------------------------------
-  // Seilaneh Sabz Holding Endpoints
-  // -------------------------------------------------------------
   app.get('/api/departments', (req, res) => {
     res.json(dbStore.departments || []);
   });
@@ -552,38 +928,75 @@ async function startServer() {
     res.json(dept);
   });
 
-  // HR Automation Hub Endpoints
+  // -------------------------------------------------------------
+  // HR Automation Hub (audit fixes AIA-01, LEA-04)
+  // Runs are HR-only and require an explicit confirm:true from a
+  // confirmation dialog. The LEAVES automation is REPORT-ONLY: mass
+  // approval of leave requests bypasses the statutory workflow and balance
+  // checks, so it is no longer offered as an automation.
+  // -------------------------------------------------------------
   app.get('/api/automation/tasks', (req, res) => {
     res.json(dbStore.automationTasks || []);
   });
 
-  app.post('/api/automation/run', (req, res) => {
-    const { taskId } = req.body;
+  app.post('/api/automation/run', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const { taskId, confirm } = req.body;
+    if (confirm !== true) {
+      return res.status(400).json({
+        error: 'اجرای اتوماسیون نیازمند تایید صریح کاربر است',
+        hint: 'پس از نمایش دیالوگ تایید، درخواست را با confirm:true ارسال کنید.',
+        requiresConfirmation: true,
+      });
+    }
     const task = dbStore.automationTasks.find(t => t.id === taskId);
     if (!task) {
       return res.status(404).json({ error: 'وظیفه اتوماسیون یافت نشد' });
     }
 
-    // Execute targeted business logic based on task category
+    const now = tehranNow();
     task.status = 'COMPLETED';
-    task.lastRunJalali = 'امروز - لحظاتی پیش';
+    task.lastRunJalali = `${now.jalaliString} - لحظاتی پیش`;
     task.successCount = (task.successCount || 0) + 1;
 
     let executionDetails = 'عملیات با موفقیت انجام شد';
     if (task.category === 'PAYROLL') {
-      dbStore.payrollSlips.forEach(p => { p.status = PayrollStatus.FINALIZED; });
-      executionDetails = 'فیش‌های حقوقی تمامی ۱۳۵۰ همکار هلدینگ نهایی گردید و به پنل کاربری ایشان ارسال شد.';
+      // Only DRAFT slips are finalized — PAID/FINALIZED rows are untouched,
+      // and the message reports the REAL count (never a fabricated 1350).
+      const drafts = dbStore.payrollSlips.filter(p => p.status === PayrollStatus.DRAFT);
+      drafts.forEach(p => { p.status = PayrollStatus.FINALIZED; });
+      executionDetails = drafts.length > 0
+        ? `${toPersianDigits(drafts.length)} فیش پیش‌نویس دوره‌های موجود نهایی (FINALIZED) شد. فیش‌های پرداخت‌شده دست‌نخورده باقی ماندند.`
+        : 'فیش پیش‌نویسی برای نهایی‌سازی وجود ندارد. ابتدا برای دوره موردنظر فیش تولید کنید.';
     } else if (task.category === 'SCREENING') {
-      executionDetails = 'غربالگری دسته‌جمعی بر روی کارجویان اجرا شد؛ نمرات تطبیق شایستگی با موفقیت ثبت گردید.';
-    } else if (task.category === 'LEAVES') {
-      dbStore.leaveRequests.forEach(l => {
-        if (l.status === LeaveStatus.PENDING_HR || l.status === LeaveStatus.PENDING_MANAGER) {
-          l.status = LeaveStatus.APPROVED;
+      // Re-categorize from EXISTING real scores against each job's thresholds.
+      // No RNG, no stage changes, no auto-rejections (decision D5).
+      let moved = 0;
+      for (const cand of dbStore.candidates) {
+        if (typeof cand.overallScore !== 'number') continue;
+        const job = dbStore.jobs.find(j => j.id === cand.jobId);
+        const priority = job?.interviewPriorityThreshold ?? 7.0;
+        const rejection = job?.initialRejectionThreshold ?? 5.0;
+        const next = cand.overallScore >= priority
+          ? CandidateCategory.INTERVIEW_PRIORITY
+          : cand.overallScore < rejection
+            ? CandidateCategory.INITIAL_REJECTION
+            : CandidateCategory.NEEDS_REVIEW;
+        if (cand.category !== next) {
+          cand.category = next;
+          moved++;
         }
-      });
-      executionDetails = 'مرخصی‌های معوقه بدون تداخل شیفت بررسی و تایید گردیدند.';
+      }
+      executionDetails = `دسته‌بندی کارجویان دارای نمره ارزیابی‌شده بازبینی شد (${toPersianDigits(moved)} تغییر دسته). کارجویان بدون نمره واقعی بدون تغییر باقی ماندند و هیچ مرحله استخدامی به صورت خودکار جابه‌جا نشد.`;
+    } else if (task.category === 'LEAVES') {
+      // REPORT-ONLY (audit LEA-04): auto-approving pending leave requests
+      // bypasses manager review and statutory balance checks.
+      const pending = dbStore.leaveRequests.filter(
+        l => l.status === LeaveStatus.PENDING_HR || l.status === LeaveStatus.PENDING_MANAGER
+      ).length;
+      executionDetails = `گزارش مرخصی‌های معوقه تهیه شد: ${toPersianDigits(pending)} درخواست در انتظار بررسی. تایید مرخصی صرفاً از جریان کاری تایید مدیر واحد و منابع انسانی (با کنترل مانده مرخصی) امکان‌پذیر است و اتوماسیون هیچ درخواستی را تایید نکرد.`;
     }
 
+    dbStore.markDirty();
     res.json({
       success: true,
       task,
@@ -592,7 +1005,7 @@ async function startServer() {
   });
 
   // AI Job Description & Job Ad Generator
-  app.post('/api/ai/generate-job-ad', async (req, res) => {
+  app.post('/api/ai/generate-job-ad', requireRole(...HR_AND_MANAGER), async (req, res) => {
     try {
       const result = await generateJobAd(req.body);
       res.json(result);
@@ -602,7 +1015,9 @@ async function startServer() {
     }
   });
 
-  // AI Voice Assistant Endpoint
+  // AI Voice Assistant Endpoint — intents that mutate data are returned with
+  // requiresConfirmation:true; the client must show a confirmation dialog and
+  // re-call the guarded endpoint (audit fix AIA-01 voice path).
   app.post('/api/ai/voice-assistant', async (req, res) => {
     try {
       const { command } = req.body;
@@ -615,15 +1030,15 @@ async function startServer() {
   });
 
   // Candidate comparison data (Table & Radar chart)
-  app.post('/api/candidates/compare', (req, res) => {
+  app.post('/api/candidates/compare', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateIds } = req.body;
     if (!Array.isArray(candidateIds) || candidateIds.length < 2) {
       return res.status(400).json({ error: 'برای مقایسه حداقل ۲ شناسه کارجو لازم است' });
     }
     const wanted = new Set(candidateIds.filter(id => typeof id === 'string'));
     const candidates = dbStore.candidates.filter(c => wanted.has(c.id));
-    if (candidates.length === 0) {
-      return res.status(400).json({ error: 'هیچ کارجویی یافت نشد' });
+    if (candidates.length < 2) {
+      return res.status(400).json({ error: 'حداقل ۲ کارجوی معتبر برای مقایسه انتخاب کنید' });
     }
 
     const allCriteria = new Set<string>();
@@ -634,10 +1049,14 @@ async function startServer() {
     });
 
     const criteriaList = Array.from(allCriteria);
+    // Missing per-criterion scores are emitted as null (chart gap) instead of
+    // 0 — a zero falsely reads as "worst possible score" (audit AIA-04).
     const radarData = criteriaList.map(criterion => {
       const row: any = { criterion };
       candidates.forEach(c => {
-        row[c.fullName] = c.criteriaScores ? (c.criteriaScores[criterion] || 0) : (c.overallScore || 0);
+        row[c.fullName] = c.criteriaScores && criterion in c.criteriaScores
+          ? c.criteriaScores[criterion]
+          : null;
       });
       return row;
     });
@@ -650,20 +1069,23 @@ async function startServer() {
   });
 
   // Save email draft (never auto-send)
-  app.post('/api/candidates/:id/draft-email', (req, res) => {
+  app.post('/api/candidates/:id/draft-email', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const { type, subject, body } = req.body;
     const cand = dbStore.candidates.find(c => c.id === id);
     if (!cand) return res.status(404).json({ error: 'کارجو یافت نشد' });
+    if (!['INVITATION', 'REJECTION'].includes(type)) {
+      return res.status(400).json({ error: 'نوع ایمیل نامعتبر است (INVITATION/REJECTION)' });
+    }
 
     cand.emailDraft = {
       type,
       subject,
       body,
       status: 'DRAFT_ONLY',
-      createdAtJalali: '۱۴۰۳/۰۶/۱۵',
+      createdAtJalali: tehranNow().jalaliString,
     };
-
+    dbStore.markDirty();
     res.json({ success: true, emailDraft: cand.emailDraft });
   });
 
@@ -671,39 +1093,202 @@ async function startServer() {
   // Module 2: Employee Records Endpoints
   // -------------------------------------------------------------
   app.get('/api/employees', (req, res) => {
-    res.json(dbStore.employees);
+    const role = currentRole();
+    const list = employeesVisibleToCurrentRole();
+    res.json(list.map(e =>
+      canViewEmployeeFully(e) ? e : sanitizeEmployee(e, role, dbStore.sessionEmployeeId)
+    ));
   });
 
-  app.post('/api/employees', (req, res) => {
-    const newEmp = {
+  app.get('/api/employees/:id', (req, res) => {
+    const emp = dbStore.employees.find(e => e.id === req.params.id);
+    if (!emp) return res.status(404).json({ error: 'پرسنل یافت نشد' });
+    const role = currentRole();
+    if (role === UserRole.EMPLOYEE && emp.id !== dbStore.sessionEmployeeId) {
+      return res.status(403).json({ error: 'مشاهده جزئیات پرونده سایر همکاران مجاز نیست' });
+    }
+    res.json(canViewEmployeeFully(emp) ? emp : sanitizeEmployee(emp, role, dbStore.sessionEmployeeId));
+  });
+
+  app.post('/api/employees', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const b = req.body || {};
+    const fullName = String(b.fullName || '').trim();
+    const nationalIdRaw = String(b.nationalId || '').trim();
+    const email = String(b.email || '').trim();
+    const phone = String(b.phone || '').trim();
+    const department = String(b.department || '').trim();
+    const jobTitle = String(b.jobTitle || '').trim();
+    const baseSalary = Number(b.baseSalaryToman);
+
+    if (!fullName) return res.status(400).json({ error: 'نام و نام خانوادگی الزامی است' });
+    if (!isValidIranianNationalId(nationalIdRaw)) {
+      return res.status(400).json({ error: 'کد ملی نامعتبر است (۱۰ رقم با رقم کنترلی صحیح)' });
+    }
+    if (dbStore.employees.some(e => e.nationalId.replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) === nationalIdRaw.replace(/[۰-۹]/g, d => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d))))) {
+      return res.status(409).json({ error: 'پرسنلی با این کد ملی قبلاً ثبت شده است' });
+    }
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'رایانامه سازمانی نامعتبر است' });
+    if (dbStore.employees.some(e => e.email.toLowerCase() === email.toLowerCase())) {
+      return res.status(409).json({ error: 'پرسنلی با این رایانامه قبلاً ثبت شده است' });
+    }
+    if (!/^09\d{9}$/.test(phone)) return res.status(400).json({ error: 'شماره موبایل نامعتبر است (قالب: ۰۹۱۲۳۴۵۶۷۸۹)' });
+    if (!department) return res.status(400).json({ error: 'دپارتمان الزامی است' });
+    if (!jobTitle) return res.status(400).json({ error: 'عنوان شغلی الزامی است' });
+    if (!Number.isFinite(baseSalary) || baseSalary < 0) {
+      return res.status(400).json({ error: 'حقوق پایه باید عددی نامنفی باشد' });
+    }
+    if (!parseJalaliDateString(b.hireDateJalali)) {
+      return res.status(400).json({ error: 'تاریخ استخدام نامعتبر است (قالب معتبر: ۱۴۰۳/۰۶/۱۵)' });
+    }
+    if (!['SINGLE', 'MARRIED'].includes(b.maritalStatus || 'SINGLE')) {
+      return res.status(400).json({ error: 'وضعیت تاهل نامعتبر است' });
+    }
+    const childrenCount = Number(b.childrenCount || 0);
+    if (!Number.isInteger(childrenCount) || childrenCount < 0 || childrenCount > 20) {
+      return res.status(400).json({ error: 'تعداد فرزندان نامعتبر است' });
+    }
+
+    const existingCodes = new Set(dbStore.employees.map(e => e.personnelCode));
+    let personnelCode = String(b.personnelCode || '').trim();
+    if (personnelCode && existingCodes.has(personnelCode)) {
+      return res.status(409).json({ error: 'کد پرسنلی تکراری است' });
+    }
+    if (!personnelCode) {
+      do {
+        personnelCode = toPersianDigits(`10${Math.floor(100 + Math.random() * 900)}`);
+      } while (existingCodes.has(personnelCode));
+    }
+
+    const newEmp: Employee = {
       id: `emp-${Date.now()}`,
-      personnelCode: req.body.personnelCode || `۱۰${Math.floor(100 + Math.random() * 900)}`,
-      nationalId: req.body.nationalId || '۰۰۱۲۳۴۵۶۷۸',
-      fullName: req.body.fullName || 'همکار جدید',
-      fatherName: req.body.fatherName || 'محمد',
-      birthDateJalali: req.body.birthDateJalali || '۱۳۷۰/۰۱/۰۱',
-      phone: req.body.phone || '09123456789',
-      email: req.body.email || 'emp@company.ir',
-      department: req.body.department || 'فناوری اطلاعات',
-      jobTitle: req.body.jobTitle || 'کارشناس',
-      hireDateJalali: req.body.hireDateJalali || '۱۴۰۳/۰۶/۰۱',
-      baseSalaryToman: req.body.baseSalaryToman || 30000000,
-      maritalStatus: req.body.maritalStatus || 'SINGLE',
-      childrenCount: req.body.childrenCount || 0,
-      bankIban: req.body.bankIban || 'IR000000000000000000000000',
-      status: 'ACTIVE' as const,
+      personnelCode,
+      nationalId: nationalIdRaw,
+      fullName,
+      fatherName: String(b.fatherName || '').trim() || undefined,
+      birthDateJalali: String(b.birthDateJalali || '').trim(),
+      phone,
+      email,
+      department,
+      jobTitle,
+      hireDateJalali: String(b.hireDateJalali).trim(),
+      baseSalaryToman: baseSalary,
+      maritalStatus: b.maritalStatus || 'SINGLE',
+      childrenCount,
+      bankIban: String(b.bankIban || '').trim(),
+      directManagerId: b.directManagerId || undefined,
+      status: 'ACTIVE',
       documents: [],
-      jobHistories: [],
+      jobHistories: [
+        {
+          id: `jh-${Date.now()}`,
+          changeType: 'PROMOTION',
+          previousTitle: '—',
+          newTitle: jobTitle,
+          effectiveDateJalali: String(b.hireDateJalali).trim(),
+          description: 'شروع همکاری (ثبت پرونده پرسنلی)',
+        },
+      ],
+      ssoContributionDays: Number(b.ssoContributionDays || 0),
+      commuteAllowanceToman: Number(b.commuteAllowanceToman || 0),
     };
     dbStore.employees.push(newEmp);
+    dbStore.markDirty();
     res.status(201).json(newEmp);
+  });
+
+  app.patch('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const emp = dbStore.employees.find(e => e.id === req.params.id);
+    if (!emp) return res.status(404).json({ error: 'پرسنل یافت نشد' });
+    const b = req.body || {};
+    const now = tehranNow();
+
+    const salaryChanged = b.baseSalaryToman !== undefined && Number(b.baseSalaryToman) !== emp.baseSalaryToman;
+    const titleChanged = b.jobTitle !== undefined && String(b.jobTitle).trim() !== emp.jobTitle;
+    const deptChanged = b.department !== undefined && String(b.department).trim() !== emp.department;
+
+    if (b.baseSalaryToman !== undefined) {
+      const v = Number(b.baseSalaryToman);
+      if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: 'حقوق پایه نامعتبر است' });
+    }
+    if (b.status !== undefined && !['ACTIVE', 'RESIGNED', 'ON_LEAVE'].includes(b.status)) {
+      return res.status(400).json({ error: 'وضعیت اشتغال نامعتبر است' });
+    }
+    if (b.childrenCount !== undefined) {
+      const v = Number(b.childrenCount);
+      if (!Number.isInteger(v) || v < 0 || v > 20) return res.status(400).json({ error: 'تعداد فرزندان نامعتبر است' });
+    }
+    if (b.maritalStatus !== undefined && !['SINGLE', 'MARRIED'].includes(b.maritalStatus)) {
+      return res.status(400).json({ error: 'وضعیت تاهل نامعتبر است' });
+    }
+    if (b.nationalId !== undefined && !isValidIranianNationalId(String(b.nationalId))) {
+      return res.status(400).json({ error: 'کد ملی نامعتبر است' });
+    }
+
+    // Audit trail: real job-history entries for salary/title/department moves
+    // (the seed histories had fabricated dates and nothing was ever recorded).
+    if (salaryChanged || titleChanged || deptChanged) {
+      emp.jobHistories = emp.jobHistories || [];
+      emp.jobHistories.push({
+        id: `jh-${Date.now()}`,
+        changeType: salaryChanged && !titleChanged && !deptChanged ? 'SALARY_CHANGE' : titleChanged ? 'PROMOTION' : 'TRANSFER',
+        previousTitle: `${emp.jobTitle} — ${toPersianDigits(emp.baseSalaryToman)} تومان`,
+        newTitle: `${String(b.jobTitle ?? emp.jobTitle).trim()} — ${toPersianDigits(Number(b.baseSalaryToman ?? emp.baseSalaryToman))} تومان`,
+        effectiveDateJalali: now.jalaliString,
+        description: deptChanged ? `انتقال به ${String(b.department).trim()}` : 'تغییر ثبت‌شده توسط منابع انسانی',
+      });
+    }
+
+    const editable = [
+      'fullName', 'fatherName', 'birthDateJalali', 'phone', 'email', 'department',
+      'jobTitle', 'baseSalaryToman', 'maritalStatus', 'childrenCount', 'bankIban',
+      'directManagerId', 'status', 'ssoContributionDays', 'commuteAllowanceToman',
+    ] as const;
+    for (const key of editable) {
+      if (b[key] !== undefined) (emp as any)[key] = typeof b[key] === 'string' ? b[key].trim() : b[key];
+    }
+    if (b.hireDateJalali !== undefined) {
+      if (!parseJalaliDateString(b.hireDateJalali)) return res.status(400).json({ error: 'تاریخ استخدام نامعتبر است' });
+      emp.hireDateJalali = String(b.hireDateJalali).trim();
+    }
+
+    dbStore.markDirty();
+    res.json(emp);
+  });
+
+  // Deleting an employee with payroll/attendance/leave history would destroy
+  // statutory records (audit SEC-03) — blocked; use RESIGNED status instead.
+  app.delete('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const idx = dbStore.employees.findIndex(e => e.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: 'پرسنل یافت نشد' });
+    const id = req.params.id;
+    const hasSlips = dbStore.payrollSlips.some(p => p.employeeId === id);
+    const hasAttendance = dbStore.attendances.some(a => a.employeeId === id);
+    const hasLeaves = dbStore.leaveRequests.some(l => l.employeeId === id);
+    if (hasSlips || hasAttendance || hasLeaves) {
+      return res.status(409).json({
+        error: 'پرونده پرسنلی دارای سوابق حقوقی/تردد/مرخصی است و طبق الزامات قانونی قابل حذف نیست',
+        suggestion: 'برای پایان همکاری، وضعیت پرسنل را به RESIGNED تغییر دهید (PATCH /api/employees/:id).',
+      });
+    }
+    dbStore.employees.splice(idx, 1);
+    dbStore.checklistItems = dbStore.checklistItems.filter(c => c.employeeId !== id);
+    dbStore.markDirty();
+    res.json({ success: true, deletedId: id });
   });
 
   // -------------------------------------------------------------
   // Module 3: Attendance & Leave Endpoints
   // -------------------------------------------------------------
   app.get('/api/attendance', (req, res) => {
-    res.json(dbStore.attendances);
+    const role = currentRole();
+    let list = dbStore.attendances;
+    if (role === UserRole.EMPLOYEE) {
+      list = list.filter(a => a.employeeId === dbStore.sessionEmployeeId);
+    } else if (role === UserRole.DEPT_MANAGER) {
+      const visible = new Set(employeesVisibleToCurrentRole().map(e => e.id));
+      list = list.filter(a => visible.has(a.employeeId));
+    }
+    res.json(list);
   });
 
   app.post('/api/attendance/check-in-out', (req, res) => {
@@ -711,17 +1296,31 @@ async function startServer() {
     if (type !== 'CHECK_IN' && type !== 'CHECK_OUT') {
       return res.status(400).json({ error: 'نوع تردد نامعتبر است' });
     }
-    const emp = dbStore.employees.find(e => e.id === employeeId);
+
+    // Attribution (audit fix LEA-03/P16): employees can only punch for the
+    // session identity; there is no silent employees[0] fallback anymore.
+    const role = currentRole();
+    let targetId: string;
+    if (role === UserRole.EMPLOYEE || role === UserRole.DEPT_MANAGER) {
+      targetId = dbStore.sessionEmployeeId;
+      if (employeeId && employeeId !== targetId) {
+        return res.status(403).json({ error: 'ثبت تردد فقط برای خود کاربر مجاز است' });
+      }
+    } else {
+      targetId = employeeId || dbStore.sessionEmployeeId;
+    }
+
+    const emp = dbStore.employees.find(e => e.id === targetId);
     if (!emp) {
       return res.status(404).json({ error: 'پرسنل یافت نشد' });
     }
 
-    // Real current Jalali date (Persian digits, matching the rest of the dataset)
-    const todayJalali = formatJalaliDate(getTodayJalali(), true);
-    const now = new Date();
-    const timeEn = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const timeStr = toPersianDigits(timeEn);
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    // Asia/Tehran wall clock (audit fix LOC-03): previously the server's UTC
+    // clock produced check-in times 3.5h off the Iranian shift.
+    const now = tehranNow();
+    const todayJalali = now.jalaliString;
+    const timeStr = now.timeStr;
+    const nowMinutes = now.minutes;
 
     const SHIFT_START_MINUTES = 8 * 60; // 08:00
     const SHIFT_END_MINUTES = 17 * 60; // 17:00
@@ -753,33 +1352,102 @@ async function startServer() {
       }
       record.checkOut = timeStr;
       record.overtimeHours = Math.max(0, Math.round(((nowMinutes - SHIFT_END_MINUTES) / 60) * 10) / 10);
+      // Early leave: clocking out before shift end (and not overtime).
+      record.earlyLeaveMinutes = record.overtimeHours > 0
+        ? 0
+        : Math.max(0, SHIFT_END_MINUTES - nowMinutes);
     }
 
+    dbStore.markDirty();
     res.json(record);
   });
 
+  // Leave requests — scoped by role (audit fix SEC-01).
   app.get('/api/leave/requests', (req, res) => {
-    res.json(dbStore.leaveRequests);
+    const role = currentRole();
+    let list = dbStore.leaveRequests;
+    if (role === UserRole.EMPLOYEE) {
+      list = list.filter(l => l.employeeId === dbStore.sessionEmployeeId);
+    } else if (role === UserRole.DEPT_MANAGER) {
+      const visible = new Set(employeesVisibleToCurrentRole().map(e => e.id));
+      list = list.filter(l => visible.has(l.employeeId));
+    }
+    res.json(list);
+  });
+
+  // Statutory leave balances (NEW — audit fix LEA-01): derived from Art. 64
+  // (26 working days), pro-rated by hire date, + carry-over ≤9 days (Art. 66),
+  // minus approved AND pending usage. Nothing is stored, so it cannot drift.
+  app.get('/api/leave/balances', (req, res) => {
+    const role = currentRole();
+    const scope = employeesVisibleToCurrentRole();
+    const balances = computeAllLeaveBalances(scope, dbStore.leaveRequests, tehranNow().jalali);
+    if (role === UserRole.EMPLOYEE) {
+      return res.json(balances.filter(b => b.employeeId === dbStore.sessionEmployeeId));
+    }
+    res.json(balances);
   });
 
   app.post('/api/leave/requests', (req, res) => {
     const { employeeId, leaveType, startDateJalali, endDateJalali, daysCount, reason } = req.body;
-    const emp = dbStore.employees.find(e => e.id === employeeId) || dbStore.employees[0];
+    const role = currentRole();
 
-    const newLeave = {
+    if (!Object.values(LeaveType).includes(leaveType)) {
+      return res.status(400).json({ error: 'نوع مرخصی نامعتبر است' });
+    }
+
+    // Attribution: employees/managers act for themselves; only HR may file on
+    // behalf of another employee (audit fix LEA-03).
+    let emp: Employee | undefined;
+    if (role === UserRole.HR_DIRECTOR) {
+      emp = dbStore.employees.find(e => e.id === employeeId) || sessionEmployee();
+      if (employeeId && !dbStore.employees.some(e => e.id === employeeId)) {
+        return res.status(404).json({ error: 'پرسنل مورد نظر یافت نشد' });
+      }
+    } else {
+      emp = sessionEmployee();
+      if (employeeId && employeeId !== dbStore.sessionEmployeeId) {
+        return res.status(403).json({ error: 'ثبت مرخصی فقط برای خود کاربر مجاز است' });
+      }
+    }
+    if (!emp) {
+      return res.status(404).json({ error: 'پرسنل یافت نشد' });
+    }
+
+    // Full statutory validation (audit fix LEA-02): negative/999-day ranges,
+    // invalid Jalali dates, end<start and over-quota annual leave are all
+    // rejected; the day count is DERIVED from the dates server-side.
+    const validation = validateLeaveRequest(
+      emp,
+      leaveType as LeaveType,
+      startDateJalali,
+      endDateJalali,
+      daysCount,
+      dbStore.leaveRequests,
+      tehranNow().jalali
+    );
+    if (!validation.ok) {
+      return res.status(400).json({ error: validation.error });
+    }
+
+    const newLeave: LeaveRequest = {
       id: `leave-${Date.now()}`,
       employeeId: emp.id,
       employeeName: emp.fullName,
-      leaveType: leaveType || LeaveType.ANNUAL,
+      leaveType: leaveType as LeaveType,
       startDateJalali,
       endDateJalali,
-      daysCount: parseFloat(daysCount) || 1,
-      reason: reason || 'امور شخصی',
+      daysCount: validation.daysCount!,
+      reason: String(reason || '').trim() || 'امور شخصی',
       status: LeaveStatus.PENDING_MANAGER,
-      createdAtJalali: '۱۴۰۳/۰۶/۱۵',
-    };
+      createdAtJalali: tehranNow().jalaliString,
+    } as LeaveRequest;
     dbStore.leaveRequests.unshift(newLeave);
-    res.status(201).json(newLeave);
+    dbStore.markDirty();
+    res.status(201).json({
+      ...newLeave,
+      balance: computeLeaveBalance(emp, dbStore.leaveRequests, tehranNow().jalali),
+    });
   });
 
   app.patch('/api/leave/requests/:id/approve', (req, res) => {
@@ -787,7 +1455,7 @@ async function startServer() {
     const { approved, comment } = req.body;
     // SECURITY: the acting role is taken from the server-side session state,
     // never from the request body (clients must not be able to escalate to HR).
-    const role = dbStore.currentUserRole;
+    const role = currentRole();
     const reqItem = dbStore.leaveRequests.find(l => l.id === id);
     if (!reqItem) return res.status(404).json({ error: 'درخواست مرخصی یافت نشد' });
     if (typeof approved !== 'boolean') {
@@ -795,6 +1463,39 @@ async function startServer() {
     }
     if (reqItem.status === LeaveStatus.APPROVED || reqItem.status === LeaveStatus.REJECTED) {
       return res.status(409).json({ error: 'این درخواست قبلاً تعیین تکلیف شده است' });
+    }
+
+    // A department manager may only act on their own department's requests.
+    if (role === UserRole.DEPT_MANAGER) {
+      const emp = dbStore.employees.find(e => e.id === reqItem.employeeId);
+      const dept = managerDepartment();
+      if (!emp || !dept || emp.department !== dept) {
+        return res.status(403).json({ error: 'این درخواست مربوط به واحد شما نیست' });
+      }
+    }
+
+    const becomesApproved = approved === true;
+    const quotaTypes = [LeaveType.ANNUAL, LeaveType.HOURLY];
+
+    // Final-approval balance re-check (audit fix LEA-01): between request and
+    // approval other leaves may have consumed the quota — approving must never
+    // push the statutory balance below zero.
+    if (becomesApproved && quotaTypes.includes(reqItem.leaveType)) {
+      const emp = dbStore.employees.find(e => e.id === reqItem.employeeId);
+      if (emp) {
+        const others = dbStore.leaveRequests.filter(l => l.id !== reqItem.id);
+        const balance = computeLeaveBalance(emp, others, tehranNow().jalali);
+        const start = parseJalaliDateString(reqItem.startDateJalali);
+        const yearBal = start ? balance.years[start.year] : undefined;
+        const remaining = yearBal ? yearBal.remainingDays : balance.remainingNow;
+        if (reqItem.daysCount > remaining) {
+          return res.status(409).json({
+            error: `مانده مرخصی استحقاقی ${emp.fullName} (${toPersianDigits(remaining)} روز کاری) کفاف این درخواست (${toPersianDigits(reqItem.daysCount)} روز) را نمی‌دهد`,
+            hint: 'درخواست را رد کنید یا از متقاضی بخواهید مرخصی بدون حقوق ثبت کند.',
+            balance,
+          });
+        }
+      }
     }
 
     if (role === UserRole.DEPT_MANAGER) {
@@ -824,137 +1525,237 @@ async function startServer() {
       return res.status(403).json({ error: 'شما اجازه تایید مرخصی ندارید' });
     }
 
-    res.json(reqItem);
+    dbStore.markDirty();
+    const emp = dbStore.employees.find(e => e.id === reqItem.employeeId);
+    res.json({
+      ...reqItem,
+      balance: emp ? computeLeaveBalance(emp, dbStore.leaveRequests, tehranNow().jalali) : undefined,
+    });
   });
 
   // -------------------------------------------------------------
-  // Module 4: Payroll Endpoints
+  // Module 4: Payroll Endpoints (audit fixes PAY-01..PAY-12)
   // -------------------------------------------------------------
   app.get('/api/payroll/slips', (req, res) => {
-    res.json(dbStore.payrollSlips);
+    const role = currentRole();
+    let list = dbStore.payrollSlips;
+    if (role === UserRole.EMPLOYEE || role === UserRole.DEPT_MANAGER) {
+      // Self-service: only the session user's own slips. Salary data of other
+      // employees is HR-confidential (audit fix SEC-01).
+      list = list.filter(p => p.employeeId === dbStore.sessionEmployeeId);
+    } else if (req.query.employeeId) {
+      list = list.filter(p => p.employeeId === req.query.employeeId);
+    }
+    res.json(list);
   });
 
-  app.post('/api/payroll/generate', (req, res) => {
+  // Which Jalali years have verified statutory circulars configured.
+  app.get('/api/payroll/years', (req, res) => {
+    const now = tehranNow();
+    res.json({
+      availableYears: STATUTORY_YEARS,
+      currentYearJalali: now.jalali.year,
+      currentMonthJalali: now.jalali.month,
+    });
+  });
+
+  // Statutory constants per year (transparency for the payroll UI).
+  app.get('/api/payroll/statutory/:year', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const cfg = getStatutoryConfig(Number(req.params.year));
+    if (!cfg) {
+      return res.status(404).json({
+        error: `بخشنامه دستمزد سال ${req.params.year} در سامانه ثبت نشده است`,
+        availableYears: STATUTORY_YEARS,
+      });
+    }
+    res.json(cfg);
+  });
+
+  app.post('/api/payroll/generate', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
     const monthJalali = Number(req.body?.monthJalali);
     const yearJalali = Number(req.body?.yearJalali);
+    const force = req.body?.force === true;
+
     if (!Number.isInteger(monthJalali) || monthJalali < 1 || monthJalali > 12) {
       return res.status(400).json({ error: 'ماه شمسی نامعتبر است (۱ تا ۱۲)' });
     }
-    if (!Number.isInteger(yearJalali) || yearJalali < 1300 || yearJalali > 1500) {
-      return res.status(400).json({ error: 'سال شمسی نامعتبر است' });
+    // Audit fix PAY-02: the year must have a verified statutory circular.
+    // Previously ANY year (e.g. 1350) was accepted with stale 1403 constants.
+    const cfg = getStatutoryConfig(yearJalali);
+    if (!cfg) {
+      return res.status(400).json({
+        error: `بخشنامه دستمزد و مالیات سال ${toPersianDigits(yearJalali)} در سامانه ثبت نشده است — امکان محاسبه قانونی وجود ندارد`,
+        availableYears: STATUTORY_YEARS.map(y => toPersianDigits(y)),
+        hint: 'پس از انتشار بخشنامه سال جدید، پیکربندی آن در server/statutory.ts افزوده شود.',
+      });
     }
 
-    // Recalculate payroll with Iranian labor laws:
-    // Housing: 900,000 Toman, Bon-e-Kargari: 1,400,000 Toman, Child allowance per child: 716,618 Toman
-    // SSO 7% deduction, progressive income-tax brackets.
-    // NOTE: commute/overtime below are fixed planning constants until the
-    // attendance module feeds real per-employee overtime into payroll.
-    const monthName = JALALI_MONTH_NAMES[monthJalali - 1];
-    const lastDay = getJalaliMonthDays(yearJalali, monthJalali);
-    const paidAtJalali = toPersianDigits(
-      `${yearJalali}/${String(monthJalali).padStart(2, '0')}/${String(lastDay).padStart(2, '0')}`
+    // Period lock (audit fix PAY-04/PAY-10):
+    // - PAID slips are immutable — never regenerated.
+    // - FINALIZED slips block regeneration unless force:true (explicit
+    //   re-open by HR).
+    const periodSlips = dbStore.payrollSlips.filter(
+      p => p.yearJalali === yearJalali && p.monthJalali === monthJalali
+    );
+    const paidSlips = periodSlips.filter(p => p.status === PayrollStatus.PAID);
+    const finalizedSlips = periodSlips.filter(p => p.status === PayrollStatus.FINALIZED);
+    if (paidSlips.length > 0 && paidSlips.length === periodSlips.length) {
+      return res.status(409).json({
+        error: `دوره ${toPersianDigits(yearJalali)}/${toPersianDigits(monthJalali)} کاملاً پرداخت‌شده و قفل است`,
+        locked: true,
+      });
+    }
+    if (finalizedSlips.length > 0 && !force) {
+      return res.status(409).json({
+        error: `${toPersianDigits(finalizedSlips.length)} فیش این دوره FINALIZED است — بازتولید نیازمند تایید صریح (force:true) است`,
+        requiresForce: true,
+        finalizedCount: finalizedSlips.length,
+        paidCount: paidSlips.length,
+      });
+    }
+
+    const result = generatePayrollSlips(
+      dbStore.employees,
+      cfg,
+      yearJalali,
+      monthJalali,
+      dbStore.leaveRequests,
+      dbStore.attendances,
+      dbStore.payrollSlips
     );
 
-    // Simplified progressive salary-tax brackets (monthly, Toman):
-    // 0% up to 12M, 10% on 12-16.8M, 15% on 16.8-27M, 20% above 27M.
-    const calcProgressiveTax = (taxable: number): number => {
-      if (taxable <= 0) return 0;
-      const brackets: Array<{ upTo: number; rate: number }> = [
-        { upTo: 12000000, rate: 0 },
-        { upTo: 16800000, rate: 0.10 },
-        { upTo: 27000000, rate: 0.15 },
-        { upTo: Number.POSITIVE_INFINITY, rate: 0.20 },
-      ];
-      let tax = 0;
-      let prevLimit = 0;
-      for (const b of brackets) {
-        const portion = Math.min(taxable, b.upTo) - prevLimit;
-        if (portion > 0) tax += portion * b.rate;
-        prevLimit = b.upTo;
-        if (taxable <= b.upTo) break;
-      }
-      return Math.round(tax);
-    };
-
-    const generatedSlips = dbStore.employees.map(emp => {
-      const baseSalary = emp.baseSalaryToman;
-      const housing = 900000;
-      const bonKargari = 1400000;
-      const childAllowance = emp.childrenCount * 716618;
-      const commute = 1500000;
-      const overtimePay = 2500000;
-
-      const gross = baseSalary + housing + bonKargari + childAllowance + commute + overtimePay;
-      // Insurable items: gross minus exempt items
-      const insurableSalary = gross - commute;
-      const sso7Pct = Math.round(insurableSalary * 0.07);
-
-      const taxable = Math.max(0, gross - 12000000 - sso7Pct);
-      const tax = calcProgressiveTax(taxable);
-
-      const net = gross - sso7Pct - tax;
-      const sanavat = Math.round(baseSalary / 12); // monthly reserve
-      const eidi = Math.round((baseSalary * 2) / 12); // monthly reserve
-
-      return {
-        id: `pay-${emp.id}-${yearJalali}-${monthJalali}`,
-        employeeId: emp.id,
-        employeeName: emp.fullName,
-        personnelCode: emp.personnelCode,
-        monthJalali,
-        monthName,
-        yearJalali,
-        baseSalaryToman: baseSalary,
-        housingAllowanceToman: housing,
-        bonKargariToman: bonKargari,
-        childAllowanceToman: childAllowance,
-        commuteAllowanceToman: commute,
-        overtimePayToman: overtimePay,
-        grossSalaryToman: gross,
-        ssoInsurance7PctToman: sso7Pct,
-        incomeTaxToman: tax,
-        otherDeductionsToman: 0,
-        netSalaryToman: net,
-        sanavatReserveToman: sanavat,
-        eidiReserveToman: eidi,
-        status: PayrollStatus.FINALIZED,
-        paidAtJalali,
-      };
-    });
-
-    // Merge: replace slips for this (year, month), keep every other period.
-    // Regenerating the same month is idempotent instead of duplicating rows.
-    const regeneratedKeys = new Set(
-      generatedSlips.map(sl => `${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`)
+    // Merge: replace DRAFT/FINALIZED slips for this (year, month); PAID rows
+    // and every other period are kept. Regenerating is idempotent.
+    const paidKeys = new Set(paidSlips.map(sl => `${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`));
+    const generatedKeys = new Set(result.slips.map(sl => `${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`));
+    const keepOtherPeriods = dbStore.payrollSlips.filter(
+      sl => !(sl.yearJalali === yearJalali && sl.monthJalali === monthJalali)
     );
     dbStore.payrollSlips = [
-      ...dbStore.payrollSlips.filter(
-        sl => !regeneratedKeys.has(`${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`)
-      ),
-      ...generatedSlips,
+      ...keepOtherPeriods,
+      ...paidSlips,
+      ...result.slips.filter(sl => !paidKeys.has(`${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`)),
     ];
-    res.json({ success: true, count: generatedSlips.length, slips: generatedSlips });
+    dbStore.markDirty();
+
+    res.json({
+      success: true,
+      count: result.slips.length,
+      slips: result.slips,
+      skipped: result.skipped,
+      protectedPaidCount: paidSlips.length,
+      generatedKeys: generatedKeys.size,
+      message: `${toPersianDigits(result.slips.length)} فیش پیش‌نویس (DRAFT) برای ${toPersianDigits(yearJalali)}/${toPersianDigits(monthJalali)} بر مبنای ${cfg.sourceNote} تولید شد.`,
+    });
+  });
+
+  // DRAFT → FINALIZED for a whole period (or explicit slip ids).
+  app.post('/api/payroll/finalize', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const { yearJalali, monthJalali, slipIds } = req.body || {};
+    let targets = dbStore.payrollSlips;
+    if (Array.isArray(slipIds) && slipIds.length > 0) {
+      targets = targets.filter(p => slipIds.includes(p.id));
+    } else {
+      const y = Number(yearJalali), m = Number(monthJalali);
+      if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) {
+        return res.status(400).json({ error: 'دوره (سال و ماه شمسی) یا شناسه فیش‌ها الزامی است' });
+      }
+      targets = targets.filter(p => p.yearJalali === y && p.monthJalali === m);
+    }
+    const drafts = targets.filter(p => p.status === PayrollStatus.DRAFT);
+    if (drafts.length === 0) {
+      return res.status(409).json({ error: 'فیش پیش‌نویسی در این محدوده یافت نشد' });
+    }
+    drafts.forEach(p => { p.status = PayrollStatus.FINALIZED; });
+    dbStore.markDirty();
+    res.json({
+      success: true,
+      finalizedCount: drafts.length,
+      slips: drafts,
+      message: `${toPersianDigits(drafts.length)} فیش نهایی (FINALIZED) شد.`,
+    });
+  });
+
+  // FINALIZED → PAID (records the real payment date).
+  app.post('/api/payroll/mark-paid', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+    const { yearJalali, monthJalali, slipIds } = req.body || {};
+    let targets = dbStore.payrollSlips;
+    if (Array.isArray(slipIds) && slipIds.length > 0) {
+      targets = targets.filter(p => slipIds.includes(p.id));
+    } else {
+      const y = Number(yearJalali), m = Number(monthJalali);
+      if (!Number.isInteger(y) || !Number.isInteger(m) || m < 1 || m > 12) {
+        return res.status(400).json({ error: 'دوره (سال و ماه شمسی) یا شناسه فیش‌ها الزامی است' });
+      }
+      targets = targets.filter(p => p.yearJalali === y && p.monthJalali === m);
+    }
+    const finalized = targets.filter(p => p.status === PayrollStatus.FINALIZED);
+    const drafts = targets.filter(p => p.status === PayrollStatus.DRAFT);
+    if (finalized.length === 0) {
+      return res.status(409).json({
+        error: drafts.length > 0
+          ? 'فیش‌های این دوره هنوز پیش‌نویس هستند — ابتدا نهایی (FINALIZE) کنید'
+          : 'فیش قابل پرداختی در این محدوده یافت نشد',
+      });
+    }
+    const now = tehranNow();
+    finalized.forEach(p => {
+      p.status = PayrollStatus.PAID;
+      p.paidAtJalali = now.jalaliString;
+    });
+    dbStore.markDirty();
+    res.json({
+      success: true,
+      paidCount: finalized.length,
+      slips: finalized,
+      message: `${toPersianDigits(finalized.length)} فیش به عنوان پرداخت‌شده ثبت شد (${now.jalaliString}). این دوره اکنون قفل است.`,
+    });
   });
 
   // -------------------------------------------------------------
   // Module 5: Performance Management Endpoints
   // -------------------------------------------------------------
   app.get('/api/performance/goals', (req, res) => {
-    res.json(dbStore.performanceGoals);
+    const role = currentRole();
+    let list = dbStore.performanceGoals;
+    if (role === UserRole.EMPLOYEE) {
+      list = list.filter(g => g.employeeId === dbStore.sessionEmployeeId);
+    } else if (role === UserRole.DEPT_MANAGER) {
+      const visible = new Set(employeesVisibleToCurrentRole().map(e => e.id));
+      list = list.filter(g => visible.has(g.employeeId));
+    }
+    res.json(list);
   });
 
-  app.post('/api/performance/goals', (req, res) => {
+  app.post('/api/performance/goals', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const b = req.body || {};
+    const emp = dbStore.employees.find(e => e.id === b.employeeId);
+    if (!emp) return res.status(400).json({ error: 'پرسنل هدف یافت نشد' });
+    const title = String(b.title || '').trim();
+    if (!title) return res.status(400).json({ error: 'عنوان هدف الزامی است' });
+    const weight = Number(b.weight ?? 20);
+    if (!Number.isFinite(weight) || weight < 1 || weight > 100) {
+      return res.status(400).json({ error: 'وزن هدف باید بین ۱ تا ۱۰۰ باشد' });
+    }
+    const progress = Number(b.currentProgress ?? 0);
+    if (!Number.isFinite(progress) || progress < 0 || progress > 100) {
+      return res.status(400).json({ error: 'پیشرفت هدف باید بین ۰ تا ۱۰۰ باشد' });
+    }
+    if (b.deadlineJalali && !parseJalaliDateString(b.deadlineJalali)) {
+      return res.status(400).json({ error: 'تاریخ سررسید نامعتبر است (قالب معتبر: ۱۴۰۳/۰۸/۳۰)' });
+    }
     const newGoal = {
       id: `goal-${Date.now()}`,
-      employeeId: req.body.employeeId || 'emp-2',
-      employeeName: req.body.employeeName || 'مریم فتاحی',
-      title: req.body.title || 'هدف ارزیابی عملکرد جدید',
-      targetMetric: req.body.targetMetric || 'تحقق ۱۰۰٪ تارگت',
-      currentProgress: req.body.currentProgress || 0,
-      weight: req.body.weight || 20,
-      deadlineJalali: req.body.deadlineJalali || '۱۴۰۳/۰۸/۳۰',
+      employeeId: emp.id,
+      employeeName: emp.fullName,
+      title,
+      targetMetric: String(b.targetMetric || '').trim() || 'تحقق ۱۰۰٪ تارگت',
+      currentProgress: Math.round(progress),
+      weight: Math.round(weight),
+      deadlineJalali: b.deadlineJalali || formatJalaliDate(addJalaliDays(tehranNow().jalali, 90), true),
     };
     dbStore.performanceGoals.unshift(newGoal);
+    dbStore.markDirty();
     res.status(201).json(newGoal);
   });
 
@@ -962,7 +1763,28 @@ async function startServer() {
     const { id } = req.params;
     const goal = dbStore.performanceGoals.find(g => g.id === id);
     if (!goal) return res.status(404).json({ error: 'هدف یافت نشد' });
-    if (req.body.currentProgress !== undefined) goal.currentProgress = req.body.currentProgress;
+
+    const role = currentRole();
+    // Employees may only update the progress of their OWN goals.
+    if (role === UserRole.EMPLOYEE && goal.employeeId !== dbStore.sessionEmployeeId) {
+      return res.status(403).json({ error: 'فقط اهداف خود کاربر قابل بروزرسانی است' });
+    }
+    if (role === UserRole.DEPT_MANAGER) {
+      const emp = dbStore.employees.find(e => e.id === goal.employeeId);
+      const dept = managerDepartment();
+      if (!emp || (emp.department !== dept && goal.employeeId !== dbStore.sessionEmployeeId)) {
+        return res.status(403).json({ error: 'این هدف مربوط به واحد شما نیست' });
+      }
+    }
+
+    if (req.body.currentProgress !== undefined) {
+      const p = Number(req.body.currentProgress);
+      if (!Number.isFinite(p) || p < 0 || p > 100) {
+        return res.status(400).json({ error: 'پیشرفت هدف باید بین ۰ تا ۱۰۰ باشد' });
+      }
+      goal.currentProgress = Math.round(p);
+    }
+    dbStore.markDirty();
     res.json(goal);
   });
 
@@ -977,27 +1799,120 @@ async function startServer() {
     res.json(dbStore.skillMatrix);
   });
 
+  // Real course enrollment (audit fix MOD-04: the button was alert()-only).
+  app.post('/api/training/enroll', (req, res) => {
+    const { courseId, employeeId } = req.body || {};
+    const course = dbStore.trainingCourses.find(c => c.id === courseId);
+    if (!course) return res.status(404).json({ error: 'دوره آموزشی یافت نشد' });
+
+    const role = currentRole();
+    let targetId: string;
+    if (role === UserRole.HR_DIRECTOR) {
+      targetId = employeeId || dbStore.sessionEmployeeId;
+    } else {
+      targetId = dbStore.sessionEmployeeId;
+      if (employeeId && employeeId !== targetId) {
+        return res.status(403).json({ error: 'ثبت‌نام فقط برای خود کاربر مجاز است' });
+      }
+    }
+    const emp = dbStore.employees.find(e => e.id === targetId);
+    if (!emp) return res.status(404).json({ error: 'پرسنل یافت نشد' });
+
+    if (dbStore.trainingEnrollments.some(en => en.courseId === courseId && en.employeeId === targetId)) {
+      return res.status(409).json({ error: 'این کاربر قبلاً در این دوره ثبت‌نام شده است' });
+    }
+
+    const enrollment = {
+      id: `enr-${Date.now()}`,
+      courseId,
+      employeeId: targetId,
+      employeeName: emp.fullName,
+      enrolledAtJalali: tehranNow().jalaliString,
+      status: 'ENROLLED' as const,
+    };
+    dbStore.trainingEnrollments.push(enrollment);
+    dbStore.markDirty();
+    res.status(201).json(enrollment);
+  });
+
+  app.get('/api/training/enrollments', (req, res) => {
+    const role = currentRole();
+    let list = dbStore.trainingEnrollments;
+    if (role !== UserRole.HR_DIRECTOR) {
+      list = list.filter(en => en.employeeId === dbStore.sessionEmployeeId);
+    }
+    res.json(list);
+  });
+
   // -------------------------------------------------------------
   // Module 7: Onboarding & Offboarding Endpoints
   // -------------------------------------------------------------
   app.get('/api/checklists', (req, res) => {
-    res.json(dbStore.checklistItems);
+    const role = currentRole();
+    let list = dbStore.checklistItems;
+    if (role === UserRole.EMPLOYEE) {
+      list = list.filter(c => c.employeeId === dbStore.sessionEmployeeId);
+    }
+    res.json(list);
   });
 
-  app.patch('/api/checklists/:id/toggle', (req, res) => {
+  app.patch('/api/checklists/:id/toggle', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const item = dbStore.checklistItems.find(c => c.id === id);
     if (!item) return res.status(404).json({ error: 'آیتم چک‌لیست یافت نشد' });
     item.isCompleted = !item.isCompleted;
-    item.completedAtJalali = item.isCompleted ? '۱۴۰۳/۰۶/۱۵' : undefined;
+    // Real completion date (audit fix LOC-02): was a hardcoded ۱۴۰۳/۰۶/۱۵.
+    item.completedAtJalali = item.isCompleted ? tehranNow().jalaliString : undefined;
+    dbStore.markDirty();
     res.json(item);
   });
 
   // -------------------------------------------------------------
   // Module 8: Reporting & Analytics Dashboard Endpoints
+  // Computed from LIVE data (audit fix MOD-05) — previously a static seed
+  // object unrelated to anything happening in the system.
   // -------------------------------------------------------------
   app.get('/api/analytics/metrics', (req, res) => {
-    res.json(dbStore.metrics);
+    const active = dbStore.employees.filter(e => e.status === 'ACTIVE');
+    const resigned = dbStore.employees.filter(e => e.status === 'RESIGNED');
+    const openPositions = dbStore.jobs.filter(j => j.status === 'ACTIVE');
+    const pendingLeaves = dbStore.leaveRequests.filter(
+      l => l.status === LeaveStatus.PENDING_HR || l.status === LeaveStatus.PENDING_MANAGER
+    );
+
+    // Latest generated payroll period, if any.
+    const periods = new Map<string, number>();
+    for (const sl of dbStore.payrollSlips) {
+      const key = `${sl.yearJalali}-${sl.monthJalali}`;
+      periods.set(key, (periods.get(key) || 0) + (sl.grossSalaryToman || 0));
+    }
+    const lastPeriodTotal = periods.size > 0
+      ? Array.from(periods.entries()).sort((a, b) => b[0].localeCompare(a[0]))[0][1]
+      : dbStore.metrics.monthlyPayrollTotalToman;
+
+    const hiredCandidates = dbStore.candidates.filter(c => c.stage === CandidateStage.HIRED).length;
+    const totalCandidates = dbStore.candidates.length;
+
+    // Company-wide financial aggregates are HR-confidential (audit fix SEC-02):
+    // non-HR roles receive nulls and the UI hides/locks those cards.
+    const isHRViewer = isHR();
+    res.json({
+      turnoverRatePct: dbStore.employees.length > 0
+        ? +((resigned.length / dbStore.employees.length) * 100).toFixed(1)
+        : 0,
+      averageTimeToHireDays: isHRViewer ? dbStore.metrics.averageTimeToHireDays : null,
+      costPerHireToman: isHRViewer ? dbStore.metrics.costPerHireToman : null,
+      activeHeadcount: active.length,
+      openPositionsCount: openPositions.length,
+      pendingLeavesCount: pendingLeaves.length,
+      monthlyPayrollTotalToman: isHRViewer ? lastPeriodTotal : null,
+      // Extra live indicators for the executive dashboard:
+      hiredCandidatesCount: hiredCandidates,
+      totalCandidatesCount: totalCandidates,
+      totalEmployeesEver: dbStore.employees.length,
+      computed: true,
+      computedAtJalali: tehranNow().jalaliString,
+    });
   });
 
   // -------------------------------------------------------------
@@ -1033,6 +1948,7 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`سامانه منابع انسانی کارا بر روی پورت ${PORT} آماده به کار است.`);
+    console.log(`تاریخ جاری سامانه (تهران): ${tehranNow().jalaliString}`);
   });
 }
 

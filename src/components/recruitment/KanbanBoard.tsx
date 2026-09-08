@@ -229,35 +229,43 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
                         </div>
                       </div>
 
-                      {/* Stage transition arrows */}
+                      {/* Stage transitions follow the legal hiring flow
+                          (audit fix REC-04): forward-only, and HIRED requires
+                          a completed evaluation (audit fix REC-02). */}
                       <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500">
-                        {stg.key !== CandidateStage.INITIAL_SCREENING ? (
+                        {stg.key === CandidateStage.REJECTED ? (
                           <button
                             type="button"
-                            onClick={() => {
-                              const currIdx = stages.findIndex((s) => s.key === stg.key);
-                              if (currIdx > 0) onMoveStage(cand.id, stages[currIdx - 1].key);
-                            }}
+                            onClick={() => onMoveStage(cand.id, CandidateStage.INITIAL_SCREENING)}
                             className="flex items-center gap-0.5 text-slate-500 hover:text-slate-900"
+                            title="بازگرداندن پرونده به بررسی اولیه"
                           >
                             <ArrowRight className="w-3 h-3" />
-                            <span>مرحله قبل</span>
+                            <span>بررسی مجدد</span>
                           </button>
                         ) : <span />}
 
-                        {stg.key !== CandidateStage.REJECTED && stg.key !== CandidateStage.HIRED && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const currIdx = stages.findIndex((s) => s.key === stg.key);
-                              if (currIdx < stages.length - 2) onMoveStage(cand.id, stages[currIdx + 1].key);
-                            }}
-                            className="flex items-center gap-0.5 text-emerald-700 hover:text-emerald-900 font-bold"
-                          >
-                            <span>مرحله بعد</span>
-                            <ArrowLeft className="w-3 h-3" />
-                          </button>
-                        )}
+                        {stg.key !== CandidateStage.REJECTED && stg.key !== CandidateStage.HIRED && (() => {
+                          const currIdx = stages.findIndex((st) => st.key === stg.key);
+                          const nextStage = stages[currIdx + 1]?.key;
+                          if (!nextStage || nextStage === CandidateStage.REJECTED) return null;
+                          const evaluated =
+                            typeof cand.overallScore === 'number' &&
+                            !!cand.criteriaScores && Object.keys(cand.criteriaScores).length > 0;
+                          const hireBlocked = nextStage === CandidateStage.HIRED && !evaluated;
+                          return (
+                            <button
+                              type="button"
+                              disabled={hireBlocked}
+                              title={hireBlocked ? 'استخدام فقط پس از تکمیل ارزیابی (نمره و امتیاز شاخص‌ها) ممکن است' : undefined}
+                              onClick={() => onMoveStage(cand.id, nextStage)}
+                              className={`flex items-center gap-0.5 font-bold ${hireBlocked ? 'text-slate-400 cursor-not-allowed' : 'text-emerald-700 hover:text-emerald-900'}`}
+                            >
+                              <span>{nextStage === CandidateStage.HIRED ? 'استخدام' : 'مرحله بعد'}</span>
+                              <ArrowLeft className="w-3 h-3" />
+                            </button>
+                          );
+                        })()}
                       </div>
                     </div>
                   );

@@ -1,8 +1,17 @@
 /**
  * In-memory repository with comprehensive Iranian seed data for all 8 HR modules
- * Provides live CRUD operations and serves as the active data layer
+ * Provides live CRUD operations and serves as the active data layer.
+ *
+ * PERSISTENCE (audit fix SEC-05): the store is still in-memory at request time,
+ * but every mutation-marked interval is snapshotted to data/hrms-store.json and
+ * reloaded on boot, so approved leaves / finalized payroll / hired candidates
+ * survive a server restart. (A real PostgreSQL wiring via prisma/schema.prisma
+ * remains a product decision — the schema is now honestly documented as
+ * "designed, not yet connected" instead of being claimed in the README.)
  */
 
+import fs from 'fs';
+import path from 'path';
 import {
   JobPosting,
   Candidate,
@@ -32,6 +41,13 @@ import {
 
 export class HRMSStore {
   public currentUserRole: UserRole = UserRole.HR_DIRECTOR;
+  /**
+   * Demo identity binding (audit fix LEA-03 / P16): the acting user
+   * (see /api/auth/me — «مهندس کیوان سهرابی») maps to this employee record.
+   * EMPLOYEE-role self-service actions (leave, check-in) are attributed to
+   * this id instead of the old "employees[0] fallback".
+   */
+  public sessionEmployeeId: string = 'emp-1';
 
   public jobs: JobPosting[] = [
     {
@@ -490,6 +506,8 @@ export class HRMSStore {
       childrenCount: 2,
       bankIban: 'IR550120000000001234567890',
       status: 'ACTIVE',
+      ssoContributionDays: 2000,
+      commuteAllowanceToman: 1500000,
       documents: [
         { id: 'doc-1', title: 'قرارداد کار معین سال ۱۴۰۳', fileType: 'PDF', fileUrl: '#', uploadedAtJalali: '۱۴۰۳/۰۱/۱۰' },
         { id: 'doc-2', title: 'تصویر شناسنامه و کارت ملی', fileType: 'PDF', fileUrl: '#', uploadedAtJalali: '۱۴۰۰/۰۱/۱۵' },
@@ -516,6 +534,8 @@ export class HRMSStore {
       bankIban: 'IR120170000000009876543210',
       directManagerId: 'emp-1',
       status: 'ACTIVE',
+      ssoContributionDays: 1600,
+      commuteAllowanceToman: 1500000,
       documents: [
         { id: 'doc-3', title: 'قرارداد کار تمام‌وقت', fileType: 'PDF', fileUrl: '#', uploadedAtJalali: '۱۴۰۱/۰۳/۰۱' },
       ],
@@ -539,6 +559,8 @@ export class HRMSStore {
       bankIban: 'IR890560000000005544332211',
       directManagerId: 'emp-2',
       status: 'ACTIVE',
+      ssoContributionDays: 1100,
+      commuteAllowanceToman: 1500000,
       documents: [],
       jobHistories: [],
     },
@@ -928,9 +950,9 @@ export class HRMSStore {
   public automationTasks: any[] = [
     {
       id: 'auto-payroll',
-      title: 'صدور خودکار و ارسال فیش‌های حقوقی ماهیانه',
+      title: 'نهایی‌سازی فیش‌های پیش‌نویس حقوقی',
       category: 'PAYROLL',
-      description: 'محاسبه مکانیزه ساعات کارکرد، اضافه کار، کسورات بیمه تامین اجتماعی و مالیات پلکانی با ارسال آنی به پنل پرسنل.',
+      description: 'فیش‌های DRAFT تولیدشده را نهایی (FINALIZED) می‌کند. تولید فیش همچنان با بخشنامه سال، اضافه‌کاری واقعی و کسورات قانونی در ماژول حقوق انجام می‌شود؛ فیش‌های پرداخت‌شده هرگز تغییر نمی‌کنند.',
       estimatedTimeSaved: '۲۸ ساعت در ماه',
       status: 'IDLE',
       lastRunJalali: '۱۴۰۳/۰۶/۰۱',
@@ -939,9 +961,9 @@ export class HRMSStore {
     },
     {
       id: 'auto-screening',
-      title: 'غربالگری هوشمند دسته‌جمعی رزومه‌ها با هوش مصنوعی',
+      title: 'بازبینی دسته‌بندی کارجویان ارزیابی‌شده',
       category: 'SCREENING',
-      description: 'استخراج هوشمند مشخصات ۲۰۰+ رزومه ورودی، تطبیق با شایستگی‌های نقش و نمره‌دهی تفکیکی به تفکیک مهارت‌ها.',
+      description: 'دسته کارجویان دارای نمره واقعی را بر اساس حد نصاب‌های موقعیت شغلی بازبینی می‌کند. هیچ رزومه‌ای تصادفی امتیازدهی یا رد نمی‌شود و هیچ مرحله استخدامی خودکار تغییر نمی‌کند.',
       estimatedTimeSaved: '۴۵ ساعت در ماه',
       status: 'IDLE',
       lastRunJalali: '۱۴۰۳/۰۶/۱۵',
@@ -961,9 +983,9 @@ export class HRMSStore {
     },
     {
       id: 'auto-leaves',
-      title: 'بررسی و تایید هوشمند مرخصی‌های روزانه پرسنل',
+      title: 'گزارش مرخصی‌های معوقه (فقط گزارش)',
       category: 'LEAVES',
-      description: 'بررسی سقف ۲۶ روز مرخصی سالانه و عدم همزمانی با شیفت سایر اعضای کلیدی خط تولید و تایید سیستمی.',
+      description: 'فهرست درخواست‌های در انتظار بررسی را گزارش می‌کند. تایید مرخصی صرفاً از جریان کاری تایید مدیر/منابع انسانی با کنترل مانده استحقاقی (ماده ۶۴) ممکن است — این وظیفه هیچ درخواستی را تایید نمی‌کند.',
       estimatedTimeSaved: '۱۲ ساعت در ماه',
       status: 'IDLE',
       lastRunJalali: 'امروز - ۱۰:۳۰',
@@ -1309,6 +1331,16 @@ export class HRMSStore {
     },
   ];
 
+  // ---------------- Module 6b: Training enrollments (audit fix MOD-04) ----------------
+  public trainingEnrollments: Array<{
+    id: string;
+    courseId: string;
+    employeeId: string;
+    employeeName: string;
+    enrolledAtJalali: string;
+    status: 'ENROLLED' | 'COMPLETED';
+  }> = [];
+
   public knockoutQuestions: KnockoutQuestion[] = [
     {
       id: 'kq-1',
@@ -1333,6 +1365,74 @@ export class HRMSStore {
     },
   ];
 
+  // -----------------------------------------------------------------
+  // JSON snapshot persistence (audit fix SEC-05)
+  // -----------------------------------------------------------------
+  private static readonly PERSIST_KEYS = [
+    'jobs', 'candidates', 'employees', 'attendances', 'leaveRequests',
+    'payrollSlips', 'performanceGoals', 'trainingCourses', 'skillMatrix',
+    'checklistItems', 'metrics', 'automationTasks', 'departments',
+    'trainingEnrollments', 'videoSubmissions', 'sourcedCandidates',
+    'syndicationChannels', 'knockoutQuestions', 'candidateSkillMatches',
+    'internalMobilityMatches', 'sessionEmployeeId',
+  ] as const;
+
+  private snapshotPath = path.join(process.cwd(), 'data', 'hrms-store.json');
+  private dirty = false;
+  private saveTimer: NodeJS.Timeout | null = null;
+
+  constructor() {
+    // Load after field initializers: a snapshot entry replaces the seed value.
+    this.loadSnapshot();
+    const interval = setInterval(() => {
+      if (this.dirty) this.saveSnapshot();
+    }, 4000);
+    if (typeof interval.unref === 'function') interval.unref();
+    const onExit = () => { if (this.dirty) this.saveSnapshot(); };
+    process.on('exit', onExit);
+    process.on('SIGINT', () => { onExit(); process.exit(0); });
+    process.on('SIGTERM', () => { onExit(); process.exit(0); });
+  }
+
+  /** Mark state mutated; a debounced write follows. Call from every mutating endpoint. */
+  public markDirty(): void {
+    this.dirty = true;
+    if (!this.saveTimer) {
+      this.saveTimer = setTimeout(() => {
+        this.saveTimer = null;
+        this.saveSnapshot();
+      }, 1500);
+      if (typeof this.saveTimer.unref === 'function') this.saveTimer.unref();
+    }
+  }
+
+  private loadSnapshot(): void {
+    try {
+      if (!fs.existsSync(this.snapshotPath)) return;
+      const raw = JSON.parse(fs.readFileSync(this.snapshotPath, 'utf-8'));
+      for (const key of HRMSStore.PERSIST_KEYS) {
+        if (raw[key] !== undefined) (this as any)[key] = raw[key];
+      }
+      console.log('بازیابی داده‌های سامانه از snapshot محلی انجام شد.');
+    } catch (err) {
+      console.warn('Snapshot load failed, starting from seed data:', err);
+    }
+  }
+
+  private saveSnapshot(): void {
+    try {
+      const dir = path.dirname(this.snapshotPath);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const data: Record<string, unknown> = {};
+      for (const key of HRMSStore.PERSIST_KEYS) data[key] = (this as any)[key];
+      const tmp = this.snapshotPath + '.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(data));
+      fs.renameSync(tmp, this.snapshotPath);
+      this.dirty = false;
+    } catch (err) {
+      console.warn('Snapshot save failed:', err);
+    }
+  }
 }
 
 export const dbStore = new HRMSStore();

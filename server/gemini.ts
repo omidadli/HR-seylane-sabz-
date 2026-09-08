@@ -4,8 +4,9 @@
 
 import { GoogleGenAI, Type, FunctionDeclaration } from '@google/genai';
 import { dbStore } from './store';
-import { CandidateCategory, CandidateStage } from '../src/types';
+import { CandidateCategory, CandidateStage, LeaveStatus } from '../src/types';
 import { toPersianDigits } from '../src/utils/jalali';
+import { tehranNow } from './tehran-time';
 
 // Validates and resolves the Gemini model name safely.
 // Note: In some environments, GEMINI_MODEL may be accidentally populated with an auth token,
@@ -115,8 +116,22 @@ function mentionsRejection(text: string): boolean {
   return mentionsStandaloneWord(text, 'رد') || text.includes('عدم احراز');
 }
 
-export async function processAgentChat(userPrompt: string, contextJobId?: string) {
+/**
+ * Agent chat (audit fixes REC-06 / AIA-02 / AIA-03):
+ * - conversation history is now threaded into the model call (context retention)
+ * - responses carry `aiAvailable` so the UI can honestly label local-engine
+ *   answers instead of presenting them as live AI output
+ * - every declared function call has a handler (previously three of five were
+ *   silently dropped); store-mutating handlers set `mutatedStore`.
+ */
+export async function processAgentChat(
+  userPrompt: string,
+  contextJobId?: string,
+  history: Array<{ role: string; text: string }> = []
+) {
   const apiKey = process.env.GEMINI_API_KEY;
+  let aiAvailable = false;
+  let mutatedStore = false;
 
   // Execute internal tool dispatch logic based on the user's intent
   const lower = userPrompt.toLowerCase();
@@ -174,11 +189,21 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
 ۲. پیش‌نویس ایمیل‌ها هرگز نباید خودکار ارسال شوند، فقط برای بررسی مدیر پیش‌نویس می‌شوند.
 ۳. در تحلیل و امتیازدهی، حتماً شواهد مستقیم متنی از داخل رزومه نقل قول کنید.`;
 
+      // Threaded conversation: last 6 turns (bounded to keep prompts small).
+      const chatContents: any[] = [];
+      for (const h of history.slice(-6)) {
+        const text = String(h?.text || '').slice(0, 2000);
+        if (!text) continue;
+        const role = h.role === 'assistant' || h.role === 'model' ? 'model' : 'user';
+        chatContents.push({ role, parts: [{ text }] });
+      }
+      chatContents.push({ role: 'user', parts: [{ text: userPrompt }] });
+
       let response;
       try {
         response = await ai.models.generateContent({
           model: GEMINI_MODEL,
-          contents: userPrompt,
+          contents: chatContents,
           config: {
             systemInstruction,
             tools: [
@@ -198,7 +223,7 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
         console.warn(`Primary chat model ${GEMINI_MODEL} failed, retrying with ${GEMINI_FALLBACK_MODEL}:`, err?.message || err);
         response = await ai.models.generateContent({
           model: GEMINI_FALLBACK_MODEL,
-          contents: userPrompt,
+          contents: chatContents,
           config: {
             systemInstruction,
             tools: [
@@ -258,14 +283,36 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
                 ? `کارجوی گرامی جناب آقای / سرکار خانم ${cand.fullName}،\n\nبا سلام و احترام،\nبا توجه به بررسی شایستگی‌های تحسین‌برانگیز رزومه شما و احراز نمره ${cand.overallScore || '۸.۵'} در ارزیابی هوشمند شاخص‌های موقعیت شغلی، بدین‌وسیله از شما جهت شرکت در جلسه مصاحبه تخصصی حضوری دعوت به عمل می‌آید.\n\nزمان پیشنهادی: دوشنبه ۲۶ شهریور ساعت ۱۰:۳۰ صبح\nمحل جلسه: تهران، دفتر مرکزی هلدینگ سیلانه سبز، طبقه ۴، اتاق کنفرانس منابع انسانی.\n\nلطفاً در صورت نیاز به تغییر زمان، به این پیام پاسخ دهید.\nبا احترام،\nتیم جذب و استخدام سیلانه سبز`
                 : `کارجوی گرامی،\nبا تشکر از ارسال رزومه، متاسفانه در این مرحله امکان ادامه همکاری مقدور نبوده و رزومه شما در استخر استعدادها ثبت گردید.`,
               status: 'DRAFT_ONLY',
-              createdAtJalali: '۱۴۰۳/۰۶/۱۵',
+              createdAtJalali: tehranNow().jalaliString,
             };
+          } else if (call.name === 'categorize_candidate') {
+            // Real (bounded) categorization from the model's score.
+            const cid = (call.args as any).candidateId;
+            const score = Number((call.args as any).score);
+            const cand = (dbStore.candidates || []).find(c => c.id === cid);
+            if (cand && Number.isFinite(score) && score >= 0 && score <= 10) {
+              const job = (dbStore.jobs || []).find(j => j.id === cand.jobId);
+              const priority = job?.interviewPriorityThreshold ?? 7.0;
+              const rejection = job?.initialRejectionThreshold ?? 5.0;
+              cand.overallScore = +score.toFixed(1);
+              cand.category = score >= priority
+                ? CandidateCategory.INTERVIEW_PRIORITY
+                : score < rejection
+                  ? CandidateCategory.INITIAL_REJECTION
+                  : CandidateCategory.NEEDS_REVIEW;
+              mutatedStore = true;
+            }
+          } else if (call.name === 'score_and_evaluate_resume' || call.name === 'analyze_job_posting') {
+            // These tools need the full evaluation pipeline; point the user to
+            // it instead of fabricating scores in chat (audit AIA-03).
+            suggestedActions.push('اجرای «ارزیابی هوش مصنوعی» روی پرونده کارجو از کارت ارزیابی');
           }
         }
       }
 
       if (response.text) {
         generatedText = response.text;
+        aiAvailable = true;
       }
     } catch (err) {
       console.warn('Gemini API call failed or rate limited, falling back to local expert engine:', err);
@@ -342,6 +389,14 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
         suggestedActions = ['بارگذاری گروهی ۲۰۰ رزومه جدید برای ارزیابی'];
       } else {
       const isRejection = mentionsRejection(lower);
+      if (isRejection && !named) {
+        // Audit AIA-03: never draft a REJECTION for a guessed candidate —
+        // a wrong-name rejection letter is a real-world harm.
+        generatedText = `برای تنظیم پیش‌نویس ایمیل رد، لطفاً نام کارجوی مورد نظر را صریحاً مشخص کنید. سامانه از حدس‌زدن نام کارجو برای ایمیل رد خودداری می‌کند تا نامه‌ای به اشتباه برای فرد دیگری تنظیم نشود.`;
+        suggestedActions = ['مشاهده لیست کارجویان دارای نمره زیر ۵'];
+        emailDraftPreview = null;
+        return finishChatResponse({ text: generatedText, radarData, emailDraftPreview, suggestedActions, aiAvailable, mutatedStore });
+      }
       emailDraftPreview = {
         candidateName: cand.fullName,
         candidateEmail: cand.email,
@@ -353,7 +408,7 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
           ? `${cand.fullName} گرامی،\nبا سلام و احترام،\nاز همراهی و ارسال رزومه ارزشمندتان کمال سپاس را داریم. با توجه به اولویت‌های فعلی پروژه، در حال حاضر امکان همکاری مقدور نمی‌باشد اما مشخصات شما در استخر استعدادهای سازمانی ما ذخیره گردید.`
           : `${cand.fullName} گرامی،\n\nبا سلام و احترام،\nپیرو بررسی تخصصی رزومه و سوابق درخشان شما در توسعه سامانه‌های مبتنی بر React و تایپ‌اسکریپت (کسب امتیاز ${toPersianDigits(cand.overallScore ?? '—')} از ۱۰)، با کمال مسرت از شما جهت حضور در جلسه مصاحبه فنی و معارفه دعوت به عمل می‌آوریم.\n\nزمان پیشنهادی: یکشنبه ۲۵ شهریور ۱۴۰۳، ساعت ۱۰:۳۰ صبح\nمحل جلسه: تهران، ستاد مرکزی هلدینگ سیلانه سبز، سالن اجتماعات منابع انسانی\n\nلطفاً آمادگی خود را از طریق پاسخ به این ایمیل اعلام فرمایید.\n\nبا آرزوی موفقیت،\nمدیریت جذب و استعدادهای هلدینگ سیلانه سبز`,
         status: 'DRAFT_ONLY',
-        createdAtJalali: '۱۴۰۳/۰۶/۱۵',
+        createdAtJalali: tehranNow().jalaliString,
       };
 
       generatedText = `پیش‌نویس ایمیل رسمی با رعایت ادبیات حرفه‌ای سازمانی تنظیم شد.
@@ -425,12 +480,23 @@ export async function processAgentChat(userPrompt: string, contextJobId?: string
     }
   }
 
-  return {
-    text: generatedText,
-    radarData,
-    emailDraftPreview,
-    suggestedActions,
-  };
+  return finishChatResponse({ text: generatedText, radarData, emailDraftPreview, suggestedActions, aiAvailable, mutatedStore });
+}
+
+/** Appends the honest "local engine" disclaimer when the LLM was unavailable. */
+function finishChatResponse(resp: {
+  text: string;
+  radarData: any;
+  emailDraftPreview: any;
+  suggestedActions: string[];
+  aiAvailable: boolean;
+  mutatedStore: boolean;
+}) {
+  let text = resp.text;
+  if (!resp.aiAvailable && text) {
+    text += `\n\n---\n⚠️ مدل زبانی هوش مصنوعی در دسترس نبود؛ این پاسخ توسط موتور محلی سامانه و صرفاً بر اساس داده‌های ثبت‌شده واقعی تولید شده است (هیچ اقدامی روی داده‌ها بدون تایید شما انجام نمی‌شود).`;
+  }
+  return { ...resp, text };
 }
 
 // -------------------------------------------------------------
@@ -511,6 +577,7 @@ export async function generateJobAd(params: {
           interviewQuestions: parsed.interviewQuestions || [],
           salaryBenchmarkToman: parsed.salaryBenchmarkToman || '۳۵ تا ۴۵ میلیون تومان',
           perksList: parsed.perksList || perks,
+          aiAvailable: true,
         };
       }
     } catch (err) {
@@ -585,6 +652,9 @@ ${params.keySkills || 'تخصص بالا، روحیه یادگیری، اشتی�
       'پاداش عملکرد و بهره‌وری ماهانه',
       'سرویس ایاب و ذهاب و وعده غذایی گرم',
     ],
+    // Honest labeling (audit AIA-02): this is the local template engine, not
+    // live AI output.
+    aiAvailable: false,
   };
 }
 
@@ -598,6 +668,10 @@ export async function processVoiceCommand(command: string) {
   let replyText = '';
   let actionType: string | undefined;
   let actionResult: any = null;
+  // Audit fix AIA-01: data-mutating intents are never executed by voice —
+  // they are surfaced with requiresConfirmation:true so the client shows a
+  // confirmation dialog before calling the guarded endpoint.
+  let requiresConfirmation = false;
 
   // Check Gemini first for natural language understanding and rich context
   if (apiKey) {
@@ -658,34 +732,40 @@ export async function processVoiceCommand(command: string) {
     const mfg = dbStore.departments.find(d => d.id === 'dept-mfg');
     actionType = 'SHOW_DEPARTMENT';
     actionResult = mfg;
-    if (!replyText) {
-      replyText = 'گزارش کارخانجات اشتهارد سیلانه سبز: ۴۲۰ نفر پرسنل فعال در ۳ شیفت تولید مشغول به کار هستند، ۶ ردیف شغلی باز وجود دارد و بهره‌وری خطوط تولید دافی و کامان ۹۶ درصد است.';
+    if (!replyText && mfg) {
+      replyText = `گزارش کارخانجات اشتهارد سیلانه سبز: ${toPersianDigits(mfg.headcount)} نفر پرسنل فعال، ${toPersianDigits(mfg.vacancies)} ردیف شغلی باز و شاخص بهره‌وری ${toPersianDigits(mfg.kpiScore)} درصد.`;
     }
   } else if (lower.includes('حقوق') || lower.includes('فیش') || lower.includes('بیمه') || lower.includes('مالیات') || lower.includes('دستمزد')) {
     actionType = 'RUN_AUTOMATION_PAYROLL';
+    requiresConfirmation = true;
     // NOTE: no direct store mutation here on purpose. The client executes the
     // task through POST /api/automation/run based on actionType, which is the
     // single place where automation side effects happen (mutating here too
     // would run every voice-triggered automation twice).
     if (!replyText) {
-      replyText = 'فرایند خودکار محاسبه حقوق و صدور فیش‌های ماهانه برای ۱۳۵۰ پرسنل هلدینگ سیلانه سبز با اعمال بیمه تامین اجتماعی و معافیت‌های قانونی اجرا و در کارتابل پرسنل ثبت شد.';
+      const draftCount = dbStore.payrollSlips.filter(p => p.status === 'DRAFT').length;
+      replyText = `فرایند حقوق آماده اجرا است. در حال حاضر ${toPersianDigits(draftCount)} فیش پیش‌نویس در سامانه وجود دارد. در صورت تایید شما، اتوماسیون فیش‌های پیش‌نویس را نهایی می‌کند. هیچ عملیاتی پیش از تایید شما انجام نخواهد شد.`;
     }
   } else if (lower.includes('مرخصی') || lower.includes('تردد') || lower.includes('حضور')) {
     actionType = 'CHECK_LEAVES';
-    const pendingCount = dbStore.metrics.pendingLeavesCount;
+    // Real count from live data (was a static seed metric).
+    const pendingCount = dbStore.leaveRequests.filter(
+      l => l.status === LeaveStatus.PENDING_HR || l.status === LeaveStatus.PENDING_MANAGER
+    ).length;
     if (!replyText) {
-      replyText = `در حال حاضر ${pendingCount} درخواست مرخصی در انتظار تایید مدیران است. اتوماسیون سهمیه قانونی را محاسبه کرده و تداخلی با خطوط تولید کارخانجات ندارد.`;
+      replyText = `در حال حاضر ${toPersianDigits(pendingCount)} درخواست مرخصی در انتظار تایید است. تایید مرخصی‌ها تنها از جریان کاری تایید مدیر واحد و منابع انسانی و با کنترل مانده مرخصی استحقاقی انجام می‌شود.`;
     }
   } else if (lower.includes('رزومه') || lower.includes('غربالگری') || lower.includes('کارجو') || lower.includes('مصاحبه')) {
     actionType = 'RUN_AUTOMATION_SCREENING';
+    requiresConfirmation = true;
     // NOTE: side effects happen only via POST /api/automation/run (see above).
     if (!replyText) {
-      replyText = 'اتوماسیون هوش مصنوعی غربالگری رزومه‌ها اجرا شد. رزومه‌های دریافتی بررسی و امتیازدهی شدند و کارجویان حائز اولویت مصاحبه مشخص گردیدند.';
+      replyText = 'اتوماسیون غربالگری آماده اجرا است. در صورت تایید شما، دسته‌بندی کارجویان دارای نمره ارزیابی واقعی بازبینی می‌شود. هیچ رزومه‌ای به صورت تصادفی امتیازدهی یا رد نمی‌شود و هیچ مرحله استخدامی خودکار تغییر نمی‌کند.';
     }
   } else if (lower.includes('دپارتمان') || lower.includes('واحد') || lower.includes('بخش')) {
     actionType = 'LIST_DEPARTMENTS';
     if (!replyText) {
-      replyText = 'هلدینگ سیلانه سبز دارای ۱۰ دپارتمان فعال شامل کارخانجات تولیدی، تحقیق و توسعه، مارکتینگ، فروش مویرگی و کنترل کیفیت است. جزئیات واحدها در بخش دپارتمان‌ها در دسترس شماست.';
+      replyText = `هلدینگ سیلانه سبز دارای ${toPersianDigits(dbStore.departments.length)} دپارتمان فعال شامل کارخانجات تولیدی، تحقیق و توسعه، مارکتینگ، فروش مویرگی و کنترل کیفیت است. جزئیات واحدها در بخش دپارتمان‌ها در دسترس شماست.`;
     }
   }
 
@@ -697,6 +777,7 @@ export async function processVoiceCommand(command: string) {
     replyText,
     actionType,
     actionResult,
+    requiresConfirmation,
   };
 }
 
@@ -746,6 +827,7 @@ export async function evaluateCandidateWithCriteria(params: DynamicEvaluationPar
   let weaknesses: string[] = [];
   let resumeQuotes: string[] = [];
   let executiveSummary = '';
+  let aiAvailable = false;
 
   if (apiKey) {
     try {
@@ -828,6 +910,7 @@ ${params.resumeText}
         if (Array.isArray(parsed.weaknesses)) weaknesses = parsed.weaknesses;
         if (Array.isArray(parsed.resumeQuotes)) resumeQuotes = parsed.resumeQuotes;
         if (parsed.executiveSummary) executiveSummary = parsed.executiveSummary;
+        aiAvailable = true;
       }
     } catch (err) {
       console.warn('Gemini dynamic evaluation failed or needed fallback:', err);
@@ -944,7 +1027,10 @@ ${params.resumeText}
     vetoReason,
     formulaExplanation,
     executiveSummary,
-    evaluatedAtJalali: '۱۴۰۳/۰۶/۱۵',
+    evaluatedAtJalali: tehranNow().jalaliString,
+    // Honest labeling (audit REC-05/AIA-02): false means the scores came from
+    // the deterministic local fallback, not from live AI analysis.
+    aiAvailable,
   };
 }
 

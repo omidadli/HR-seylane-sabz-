@@ -352,22 +352,30 @@ export const MobileVoiceCall: React.FC<MobileVoiceCallProps> = ({
         body: JSON.stringify({ command: commandText }),
       });
 
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.error || 'دستور صوتی پردازش نشد');
+      }
       const data = await res.json();
-      const reply = data.replyText || 'دستور شما در سیستم ثبت شد.';
+      const reply = data.replyText || 'دستور شما دریافت شد.';
+      // Audit fix AIA-01: a voice command never executes a data-mutating
+      // automation on its own. Read-only/navigation intents run immediately;
+      // mutating intents are labelled as awaiting explicit confirmation.
+      const needsConfirm = !!data.requiresConfirmation;
 
       const botMsg: VoiceCallMessage = {
         id: `bot-${Date.now()}`,
         sender: 'assistant',
         text: reply,
         timestamp: 'هم‌اکنون',
-        actionTaken: data.actionType,
+        actionTaken: needsConfirm ? undefined : data.actionType,
         actionPayload: data.actionResult,
       };
 
       setTranscript((prev) => [...prev, botMsg]);
       speakText(reply);
 
-      // Trigger respective actions
+      // Trigger navigation intents only (no side effects on the data).
       if (data.actionType === 'OPEN_JOB_GENERATOR' && onNavigateToJobAd) {
         setTimeout(() => onNavigateToJobAd(), 2200);
       } else if (data.actionType === 'SHOW_DEPARTMENT' && onNavigateToDepartments) {
@@ -377,12 +385,22 @@ export const MobileVoiceCall: React.FC<MobileVoiceCallProps> = ({
       } else if (data.actionType === 'RUN_AUTOMATION_SCREENING' && onRunAutomation) {
         onRunAutomation('auto-screening');
       }
+
+      if (needsConfirm) {
+        const confirmMsg: VoiceCallMessage = {
+          id: `bot-confirm-${Date.now()}`,
+          sender: 'assistant',
+          text: 'این دستور روی داده‌های سامانه اثر می‌گذارد. پیش از اجرا، پنجره تایید برای شما نمایش داده می‌شود و بدون تایید صریح هیچ عملیاتی انجام نمی‌شود.',
+          timestamp: 'هم‌اکنون',
+        };
+        setTranscript((prev) => [...prev, confirmMsg]);
+      }
     } catch (err) {
       console.error(err);
       const fallbackMsg: VoiceCallMessage = {
         id: `bot-${Date.now()}`,
         sender: 'assistant',
-        text: 'دستور شما دریافت شد و در کارتابل منابع انسانی هلدینگ سیلانه سبز ثبت گردید.',
+        text: `پردازش دستور صوتی ناموفق بود: ${(err as Error)?.message || 'خطای ارتباط با سرور'}. هیچ عملیاتی روی داده‌ها انجام نشد.`,
         timestamp: 'هم‌اکنون',
       };
       setTranscript((prev) => [...prev, fallbackMsg]);
@@ -583,7 +601,7 @@ export const MobileVoiceCall: React.FC<MobileVoiceCallProps> = ({
                 {msg.actionTaken && (
                   <div className="mt-1.5 pt-1 border-t border-white/10 flex items-center gap-1 text-[11px] text-emerald-300 font-bold">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>اقدام هوشمند ثبت شد: {msg.actionTaken}</span>
+                    <span>اقدام انجام‌شده: {msg.actionTaken}</span>
                   </div>
                 )}
               </div>

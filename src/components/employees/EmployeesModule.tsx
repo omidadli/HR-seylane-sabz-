@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Employee } from '../../types';
+import { Employee, UserRole } from '../../types';
 import { toPersianDigits, formatToman, getTodayJalali, formatJalaliDate } from '../../utils/jalali';
 import { JalaliDatePicker } from '../common/JalaliDatePicker';
 import {
@@ -19,13 +19,18 @@ import {
 
 interface EmployeesModuleProps {
   employees: Employee[];
+  currentRole?: UserRole;
   onCreateEmployee: (newEmp: Partial<Employee>) => void;
 }
 
 export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
   employees,
+  currentRole = UserRole.HR_DIRECTOR,
   onCreateEmployee,
 }) => {
+  // Salary / national-id columns are HR-confidential (audit fix SEC-02); the
+  // server also strips these fields for other roles, this keeps the UI honest.
+  const canSeeSensitive = currentRole === UserRole.HR_DIRECTOR;
   const [viewMode, setViewMode] = useState<'list' | 'org_chart'>('list');
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -38,33 +43,36 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
   const [jobTitle, setJobTitle] = useState('');
   const [baseSalaryToman, setBaseSalaryToman] = useState(32000000);
   const [hireDateJalali, setHireDateJalali] = useState(formatJalaliDate(getTodayJalali(), true));
-  const [phone, setPhone] = useState('09121234567');
+  const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
   const [childrenCount, setChildrenCount] = useState(0);
 
   const filtered = employees.filter(
     (e) =>
       e.fullName.includes(searchTerm) ||
-      e.personnelCode.includes(searchTerm) ||
-      e.nationalId.includes(searchTerm) ||
+      (e.personnelCode || '').includes(searchTerm) ||
+      (canSeeSensitive && (e.nationalId || '').includes(searchTerm)) ||
       e.jobTitle.includes(searchTerm) ||
       e.department.includes(searchTerm)
   );
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fullName || !jobTitle) return;
+    // No fabricated identity data (audit fix SEC-03): national id, phone and
+    // email are required and validated server-side (10-digit checksum, format,
+    // uniqueness) instead of being filled with placeholders.
+    if (!fullName || !jobTitle || !nationalId || !phone || !email) return;
 
     onCreateEmployee({
       fullName,
-      nationalId: nationalId || '۰۰۱۲۳۴۵۶۷۸',
-      personnelCode: personnelCode || `۱۰${Math.floor(100 + Math.random() * 900)}`,
+      nationalId,
+      personnelCode: personnelCode || undefined,
       department,
       jobTitle,
-      baseSalaryToman: Number(baseSalaryToman) || 30000000,
+      baseSalaryToman: Number(baseSalaryToman) || 0,
       hireDateJalali,
       phone,
-      email: email || `${fullName.replace(/\s+/g, '.')}@company.ir`,
+      email,
       childrenCount: Number(childrenCount) || 0,
       status: 'ACTIVE',
     });
@@ -115,14 +123,16 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setIsModalOpen(true)}
-            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>ثبت همکار جدید</span>
-          </button>
+          {canSeeSensitive && (
+            <button
+              type="button"
+              onClick={() => setIsModalOpen(true)}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>ثبت همکار جدید</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -147,10 +157,10 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
                 <tr>
                   <th className="p-3.5">نام و نام خانوادگی</th>
                   <th className="p-3.5">کد پرسنلی</th>
-                  <th className="p-3.5">کد ملی</th>
+                  {canSeeSensitive && <th className="p-3.5">کد ملی</th>}
                   <th className="p-3.5">واحد و سمت</th>
                   <th className="p-3.5">تاریخ استخدام</th>
-                  <th className="p-3.5">حقوق پایه (تومان)</th>
+                  {canSeeSensitive && <th className="p-3.5">حقوق پایه (تومان)</th>}
                   <th className="p-3.5 text-center">وضعیت</th>
                 </tr>
               </thead>
@@ -164,9 +174,11 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
                     <td className="p-3.5 font-bold text-slate-800">
                       {toPersianDigits(emp.personnelCode)}
                     </td>
-                    <td className="p-3.5 text-slate-600 font-mono">
-                      {toPersianDigits(emp.nationalId)}
-                    </td>
+                    {canSeeSensitive && (
+                      <td className="p-3.5 text-slate-600 font-mono">
+                        {emp.nationalId ? toPersianDigits(emp.nationalId) : '— (در حال تکمیل)'}
+                      </td>
+                    )}
                     <td className="p-3.5">
                       <div className="font-semibold text-slate-800">{emp.jobTitle}</div>
                       <div className="text-[11px] text-slate-500">{emp.department}</div>
@@ -174,14 +186,28 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
                     <td className="p-3.5 text-slate-600">
                       {toPersianDigits(emp.hireDateJalali)}
                     </td>
-                    <td className="p-3.5 font-extrabold text-emerald-800">
-                      {formatToman(emp.baseSalaryToman)}
-                    </td>
+                    {canSeeSensitive && (
+                      <td className="p-3.5 font-extrabold text-emerald-800">
+                        {typeof emp.baseSalaryToman === 'number' && emp.baseSalaryToman > 0
+                          ? formatToman(emp.baseSalaryToman)
+                          : '— (ثبت‌نشده)'}
+                      </td>
+                    )}
                     <td className="p-3.5 text-center">
-                      <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-bold inline-flex items-center gap-1">
-                        <UserCheck className="w-3 h-3" />
-                        <span>شاغل فعال</span>
-                      </span>
+                      {emp.status === 'ACTIVE' ? (
+                        <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-bold inline-flex items-center gap-1">
+                          <UserCheck className="w-3 h-3" />
+                          <span>شاغل فعال</span>
+                        </span>
+                      ) : emp.status === 'RESIGNED' ? (
+                        <span className="px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold">
+                          قطع همکاری
+                        </span>
+                      ) : (
+                        <span className="px-2.5 py-1 rounded-full bg-amber-50 text-amber-700 border border-amber-200 text-[11px] font-bold">
+                          در مرخصی
+                        </span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -361,14 +387,32 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">شماره تماس</label>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    شماره تماس <span className="text-rose-500">*</span>
+                  </label>
                   <input
                     type="text"
+                    required
                     value={phone}
                     onChange={(e) => setPhone(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl"
+                    placeholder="09123456789"
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  رایانامه سازمانی <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@company.ir"
+                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-mono"
+                />
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">

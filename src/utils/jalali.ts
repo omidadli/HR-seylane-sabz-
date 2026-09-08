@@ -146,8 +146,8 @@ export function jalaliToGregorian(jy: number, jm: number, jd: number): { year: n
 /**
  * Returns current Jalali Date
  */
-export function getTodayJalali(): JalaliDate {
-  const d = new Date();
+export function getTodayJalali(now?: Date): JalaliDate {
+  const d = now || new Date();
   return gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
 }
 
@@ -223,3 +223,104 @@ export function getJalaliMonthStartWeekday(jy: number, jm: number): number {
   // In Persian calendar: Saturday (6) is index 0
   return (gDay + 1) % 7;
 }
+
+// =============================================================================
+// Business-logic date utilities (parsing, working-day math, "now" stamps)
+// Added by the product audit fixes: the backend previously stored Jalali dates
+// as display strings and never parsed them, so no date arithmetic existed.
+// =============================================================================
+
+/**
+ * Parses a Jalali date string ("1403/06/15", "۱۴۰۳/۰۶/۱۵", "1403-6-5")
+ * into parts. Returns null for anything that is not a valid Jalali calendar
+ * date (month 1-12, day 1..monthDays including leap-year Esfand rules).
+ */
+export function parseJalaliDateString(input: string | null | undefined): JalaliDate | null {
+  if (!input || typeof input !== 'string') return null;
+  const normalized = toEnglishDigits(input.trim()).replace(/-/g, '/');
+  const m = normalized.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})$/);
+  if (!m) return null;
+  const year = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+  const day = parseInt(m[3], 10);
+  if (year < 1300 || year > 1500) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > getJalaliMonthDays(year, month)) return null;
+  return { year, month, day };
+}
+
+/** Formats Jalali parts back to the canonical Persian-digit string (۱۴۰۳/۰۶/۱۵). */
+export function toJalaliDateString(jy: number, jm: number, jd: number): string {
+  return toPersianDigits(`${jy}/${String(jm).padStart(2, '0')}/${String(jd).padStart(2, '0')}`);
+}
+
+/** Current Jalali date as canonical Persian-digit string (replaces all hardcoded ۱۴۰۳/۰۶/۱۵ stamps). */
+export function nowJalaliString(now?: Date): string {
+  const t = getTodayJalali(now);
+  return toJalaliDateString(t.year, t.month, t.day);
+}
+
+/** Compares two Jalali dates: -1 / 0 / 1 (assumes valid parts). */
+export function compareJalali(a: JalaliDate, b: JalaliDate): number {
+  if (a.year !== b.year) return a.year < b.year ? -1 : 1;
+  if (a.month !== b.month) return a.month < b.month ? -1 : 1;
+  if (a.day !== b.day) return a.day < b.day ? -1 : 1;
+  return 0;
+}
+
+/** Adds (or subtracts) calendar days to a Jalali date via the Gregorian bridge. */
+export function addJalaliDays(j: JalaliDate, days: number): JalaliDate {
+  const g = jalaliToGregorian(j.year, j.month, j.day);
+  const d = new Date(g.year, g.month - 1, g.day);
+  d.setDate(d.getDate() + days);
+  return gregorianToJalali(d.getFullYear(), d.getMonth() + 1, d.getDate());
+}
+
+/**
+ * Counts WORKING days between two Jalali dates, INCLUSIVE of both ends,
+ * excluding Fridays (جمعه). Official holidays are NOT yet modeled — the
+ * product has no holiday calendar (flagged in the audit report, LOC/C-3).
+ * Returns -1 for invalid input or end < start, and guards against absurd spans.
+ */
+export function countWorkingDaysInclusive(start: JalaliDate, end: JalaliDate): number {
+  if (compareJalali(end, start) < 0) return -1;
+  const gs = jalaliToGregorian(start.year, start.month, start.day);
+  const ge = jalaliToGregorian(end.year, end.month, end.day);
+  const ds = new Date(gs.year, gs.month - 1, gs.day);
+  const de = new Date(ge.year, ge.month - 1, ge.day);
+  const spanDays = Math.round((de.getTime() - ds.getTime()) / 86400000) + 1;
+  if (spanDays > 3660) return -1; // >10 years: reject to prevent abuse
+  let count = 0;
+  const cur = new Date(ds);
+  while (cur <= de) {
+    if (cur.getDay() !== 5) count += 1; // 5 = Friday
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
+}
+
+/** Convenience: parse two Jalali strings and count working days (or -1). */
+export function workingDaysBetweenJalaliStrings(startStr: string, endStr: string): number {
+  const s = parseJalaliDateString(startStr);
+  const e = parseJalaliDateString(endStr);
+  if (!s || !e) return -1;
+  return countWorkingDaysInclusive(s, e);
+}
+
+/**
+ * Validates an Iranian national ID (کد ملی) — 10 digits with the standard
+ * check digit. Accepts Persian or Latin digits. Empty/padded-identical
+ * digits (e.g. 0000000000) are rejected.
+ */
+export function isValidIranianNationalId(input: string | null | undefined): boolean {
+  if (!input) return false;
+  const digits = toEnglishDigits(String(input).trim()).replace(/\s/g, '');
+  if (!/^\d{10}$/.test(digits)) return false;
+  if (/^(\d)\1{9}$/.test(digits)) return false;
+  let sum = 0;
+  for (let i = 0; i < 9; i += 1) sum += parseInt(digits[i], 10) * (10 - i);
+  const remainder = sum % 11;
+  const check = parseInt(digits[9], 10);
+  return (remainder < 2 && check === remainder) || (remainder >= 2 && check === 11 - remainder);
+}
+

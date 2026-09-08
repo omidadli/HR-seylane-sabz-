@@ -24,14 +24,15 @@ import {
   Zap,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ModuleKey } from './Sidebar';
-import { JobPosting, Candidate } from '../../types';
+import { ModuleKey, canAccessModule } from './Sidebar';
+import { JobPosting, Candidate, UserRole } from '../../types';
 import { toPersianDigits } from '../../utils/jalali';
 
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectModule: (module: ModuleKey) => void;
+  currentRole?: UserRole;
   onOpenVoiceAssistant?: () => void;
   onOpenJobGenerator?: () => void;
   jobs?: JobPosting[];
@@ -53,6 +54,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   isOpen,
   onClose,
   onSelectModule,
+  currentRole = UserRole.HR_DIRECTOR,
   onOpenVoiceAssistant,
   onOpenJobGenerator,
   jobs = [],
@@ -207,7 +209,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       {
         id: 'nav-payroll',
         title: 'حقوق، دستمزد و فیش‌های پرسنلی',
-        subtitle: 'محاسبه مکانیزه حقوق، بیمه ۷٪ تأمین اجتماعی و مالیات پله‌ای ۱۴۰۳',
+        subtitle: 'محاسبه حقوق بر مبنای بخشنامه سال، بیمه ۷٪ تأمین اجتماعی و مالیات پله‌ای',
         category: 'بخش‌های اصلی سامانه',
         icon: Wallet,
         action: () => {
@@ -337,8 +339,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       });
     });
 
-    return items;
-  }, [jobs, candidates, onClose, onSelectModule, onOpenVoiceAssistant, onOpenJobGenerator, onSelectJob]);
+    // Role gating (audit fix SEC-02): hide commands this role cannot execute.
+    const RECRUITMENT_COMMANDS = new Set([
+      'action-job-generator', 'action-criteria-matrix', 'action-hirevue-video',
+      'action-eightfold-skills', 'action-ziprecruiter-sourcing', 'nav-recruitment',
+    ]);
+    return items.filter((item) => {
+      if (RECRUITMENT_COMMANDS.has(item.id)) return canAccessModule(currentRole, 'recruitment');
+      if (item.id === 'nav-payroll') return canAccessModule(currentRole, 'payroll');
+      if (item.id === 'nav-analytics') return canAccessModule(currentRole, 'analytics');
+      return true;
+    });
+  }, [jobs, candidates, currentRole, onClose, onSelectModule, onOpenVoiceAssistant, onOpenJobGenerator, onSelectJob]);
 
   // Filter items
   const filteredItems = useMemo(() => {

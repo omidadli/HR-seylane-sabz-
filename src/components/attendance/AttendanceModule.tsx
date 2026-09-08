@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { AttendanceRecord, Employee, LeaveRequest, LeaveStatus, LeaveType, UserRole } from '../../types';
+import { AttendanceRecord, Employee, LeaveBalance, LeaveRequest, LeaveStatus, LeaveType, UserRole } from '../../types';
+import { parseJalaliDateString, countWorkingDaysInclusive } from '../../utils/jalali';
 import { toPersianDigits, getTodayJalali, formatJalaliDate } from '../../utils/jalali';
 import { JalaliDatePicker } from '../common/JalaliDatePicker';
 import {
@@ -19,7 +20,10 @@ interface AttendanceModuleProps {
   currentRole: UserRole;
   attendances: AttendanceRecord[];
   leaveRequests: LeaveRequest[];
+  /** Statutory balances computed server-side (Art. 64/66) — audit fix LEA-01. */
+  leaveBalances: LeaveBalance[];
   employees: Employee[];
+  sessionEmployeeId?: string;
   onCheckInOut: (type: 'CHECK_IN' | 'CHECK_OUT') => void;
   onSubmitLeaveRequest: (req: Partial<LeaveRequest>) => void;
   onApproveLeave: (id: string, approved: boolean, comment?: string) => void;
@@ -29,7 +33,9 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
   currentRole,
   attendances,
   leaveRequests,
+  leaveBalances,
   employees,
+  sessionEmployeeId,
   onCheckInOut,
   onSubmitLeaveRequest,
   onApproveLeave,
@@ -44,23 +50,63 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
   const [daysCount, setDaysCount] = useState(1);
   const [reason, setReason] = useState('');
 
-  // Iranian labor law: 26 working days annual leave
-  const TOTAL_ANNUAL_LEAVE_DAYS = 26;
-  const USED_LEAVE_DAYS = 7;
-  const REMAINING_LEAVE_DAYS = TOTAL_ANNUAL_LEAVE_DAYS - USED_LEAVE_DAYS;
+  // Real statutory balance (audit fix LEA-01): the card used to show a
+  // hardcoded "7 days used" fiction unrelated to any stored request.
+  const myBalance = leaveBalances.find((b) => b.employeeId === sessionEmployeeId) || leaveBalances[0];
+  const currentYearBalance = myBalance ? myBalance.years[myBalance.currentYear] : undefined;
+
+  // Server-derived working-day preview for the selected range (Fridays excluded).
+  const previewDays = (() => {
+    const s0 = parseJalaliDateString(startDate);
+    const e0 = parseJalaliDateString(endDate);
+    if (!s0 || !e0) return null;
+    return countWorkingDaysInclusive(s0, e0);
+  })();
+  const rangeInvalid = previewDays !== null && previewDays < 0;
+  const exceedsQuota =
+    leaveType === LeaveType.ANNUAL &&
+    previewDays !== null &&
+    previewDays > 0 &&
+    currentYearBalance !== undefined &&
+    previewDays > currentYearBalance.remainingDays;
 
   const handleLeaveSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (rangeInvalid) {
+      showToastLocal('تاریخ پایان نمی‌تواند پیش از تاریخ شروع باشد');
+      return;
+    }
+    if (exceedsQuota) {
+      showToastLocal(
+        `مانده مرخصی استحقاقی شما ${currentYearBalance?.remainingDays ?? 0} روز کاری است؛ درخواست بیش از مانده قابل ثبت نیست (ماده ۶۴). در صورت نیاز مرخصی بدون حقوق انتخاب کنید.`
+      );
+      return;
+    }
+    if (leaveType === LeaveType.MARRIAGE && previewDays !== null && previewDays > 3) {
+      showToastLocal('مرخصی ازدواج مطابق ماده ۷۳ قانون کار حداکثر ۳ روز است');
+      return;
+    }
     onSubmitLeaveRequest({
       leaveType,
       startDateJalali: startDate,
       endDateJalali: endDate,
-      daysCount: Number(daysCount) || 1,
+      // For hourly leave the fractional input is authoritative; otherwise the
+      // server derives the working-day count from the dates.
+      daysCount:
+        leaveType === LeaveType.HOURLY
+          ? Number(daysCount) || 0.5
+          : (previewDays ?? (Number(daysCount) || 1)),
       reason: reason || 'مرخصی استحقاقی روزانه',
     });
     setIsLeaveModalOpen(false);
     setReason('');
   };
+
+  const [localNotice, setLocalNotice] = useState<string | null>(null);
+  function showToastLocal(msg: string) {
+    setLocalNotice(msg);
+    setTimeout(() => setLocalNotice(null), 6000);
+  }
 
   const getStatusBadge = (status: LeaveStatus) => {
     switch (status) {
@@ -142,33 +188,44 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
               <span>مانده مرخصی استحقاقی (ماده ۶۴ قانون کار جمهوری اسلامی ایران)</span>
             </div>
             <span className="text-xs font-extrabold text-emerald-800">
-              سقف قانونی: {toPersianDigits(TOTAL_ANNUAL_LEAVE_DAYS)} روز کاری
+              سال {myBalance ? toPersianDigits(myBalance.currentYear) : '—'}
             </span>
           </div>
 
           <p className="text-[11px] text-slate-600 leading-relaxed">
-            مطابق قانون کار، هر کارگر سالانه مستحق ۲۶ روز کاری مرخصی استحقاقی با حقوق است (با احتساب ۴ جمعه معادل یک ماه).
+            مطابق ماده ۶۴ قانون کار، هر کارگر سالانه مستحق ۲۶ روز کاری مرخصی استحقاقی با حقوق است (با احتساب ۴ جمعه).
+            مانده زیر به صورت زنده از درخواست‌های تاییدشده و در انتظار بررسی محاسبه می‌شود؛ انتقال سال قبل حداکثر ۹ روز (ماده ۶۶).
           </p>
 
-          <div className="grid grid-cols-3 gap-3 pt-2 text-center text-xs">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 text-center text-xs">
             <div className="bg-white/80 p-2 rounded-xl border border-emerald-200">
-              <div className="text-[10px] text-slate-500">سقف سالانه</div>
+              <div className="text-[10px] text-slate-500">سقف امسال (تناسب استخدام)</div>
               <div className="text-sm font-extrabold text-slate-800">
-                {toPersianDigits(TOTAL_ANNUAL_LEAVE_DAYS)} روز
+                {toPersianDigits(currentYearBalance?.entitlementDays ?? 0)} روز
               </div>
             </div>
-
             <div className="bg-white/80 p-2 rounded-xl border border-emerald-200">
-              <div className="text-[10px] text-slate-500">استفاده‌شده تا کنون</div>
-              <div className="text-sm font-extrabold text-amber-700">
-                {toPersianDigits(USED_LEAVE_DAYS)} روز
+              <div className="text-[10px] text-slate-500">انتقال از سال قبل</div>
+              <div className="text-sm font-extrabold text-slate-800">
+                {toPersianDigits(currentYearBalance?.carryoverDays ?? 0)} روز
               </div>
             </div>
-
+            <div className="bg-white/80 p-2 rounded-xl border border-emerald-200">
+              <div className="text-[10px] text-slate-500">استفاده‌شده (تاییدشده)</div>
+              <div className="text-sm font-extrabold text-amber-700">
+                {toPersianDigits(currentYearBalance?.usedDays ?? 0)} روز
+              </div>
+            </div>
+            <div className="bg-white/80 p-2 rounded-xl border border-emerald-200">
+              <div className="text-[10px] text-slate-500">در انتظار بررسی</div>
+              <div className="text-sm font-extrabold text-sky-700">
+                {toPersianDigits(currentYearBalance?.pendingDays ?? 0)} روز
+              </div>
+            </div>
             <div className="bg-white/80 p-2 rounded-xl border border-emerald-200">
               <div className="text-[10px] text-slate-500">مانده قابل استفاده</div>
               <div className="text-sm font-extrabold text-emerald-700">
-                {toPersianDigits(REMAINING_LEAVE_DAYS)} روز
+                {toPersianDigits(currentYearBalance?.remainingDays ?? 0)} روز
               </div>
             </div>
           </div>
@@ -280,6 +337,12 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
                         ? 'استحقاقی'
                         : req.leaveType === LeaveType.SICK
                         ? 'استعلاجی'
+                        : req.leaveType === LeaveType.HOURLY
+                        ? 'ساعتی'
+                        : req.leaveType === LeaveType.MARRIAGE
+                        ? 'ازدواج (ماده ۷۳)'
+                        : req.leaveType === LeaveType.MATERNITY
+                        ? 'زایمان'
                         : 'بدون حقوق'}
                     </span>
                   </td>
@@ -353,8 +416,10 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
                 >
                   <option value={LeaveType.ANNUAL}>استحقاقی (کسر از مانده ۲۶ روزه)</option>
                   <option value={LeaveType.SICK}>استعلاجی (نیازمند گواهی پزشک)</option>
-                  <option value={LeaveType.HOURLY}>ساعتی</option>
-                  <option value={LeaveType.UNPAID}>بدون حقوق</option>
+                  <option value={LeaveType.HOURLY}>ساعتی (کسری از روز کاری)</option>
+                  <option value={LeaveType.MARRIAGE}>ازدواج (۳ روز با حقوق — ماده ۷۳)</option>
+                  <option value={LeaveType.MATERNITY}>زایمان (مشمول بیمه تامین اجتماعی)</option>
+                  <option value={LeaveType.UNPAID}>بدون حقوق (کسر از حقوق دوره)</option>
                 </select>
               </div>
 
@@ -373,17 +438,35 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  تعداد روز کاری
+                  {leaveType === LeaveType.HOURLY ? 'مدت به کسری از روز کاری (مثلاً ۰.۵)' : 'روزهای کاری بازه (جمعه‌ها خارج — محاسبه خودکار)'}
                 </label>
-                <input
-                  type="number"
-                  min={1}
-                  max={26}
-                  value={daysCount}
-                  onChange={(e) => setDaysCount(parseFloat(e.target.value) || 1)}
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold"
-                />
+                {leaveType === LeaveType.HOURLY ? (
+                  <input
+                    type="number"
+                    min={0.1}
+                    max={1}
+                    step={0.1}
+                    value={daysCount}
+                    onChange={(e) => setDaysCount(parseFloat(e.target.value) || 0.5)}
+                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold"
+                  />
+                ) : (
+                  <div className="w-full px-3 py-2 text-xs bg-slate-100 border border-slate-200 rounded-xl font-bold text-slate-700">
+                    {previewDays === null ? '—' : previewDays < 0 ? 'بازه نامعتبر (پایان پیش از شروع)' : `${toPersianDigits(previewDays)} روز کاری`}
+                  </div>
+                )}
+                {exceedsQuota && (
+                  <p className="text-[10px] text-rose-700 font-bold mt-1">
+                    این درخواست از مانده مرخصی استحقاقی شما ({toPersianDigits(currentYearBalance?.remainingDays ?? 0)} روز) بیشتر است و ثبت نخواهد شد.
+                  </p>
+                )}
               </div>
+
+              {localNotice && (
+                <div className="text-[11px] font-bold text-rose-800 bg-rose-50 border border-rose-200 rounded-xl p-2.5">
+                  {localNotice}
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">

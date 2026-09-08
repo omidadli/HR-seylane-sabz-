@@ -10,8 +10,10 @@ import {
   ChecklistItem,
   Employee,
   JobPosting,
+  LeaveBalance,
   LeaveRequest,
   PayrollSlip,
+  PayrollStatus,
   PerformanceGoal,
   SkillMatrixItem,
   TrainingCourse,
@@ -21,7 +23,7 @@ import {
   HRDashboardMetrics,
 } from './types';
 import { Header } from './components/common/Header';
-import { Sidebar, ModuleKey } from './components/common/Sidebar';
+import { Sidebar, ModuleKey, MODULE_ACCESS } from './components/common/Sidebar';
 import { ExecutiveDashboard } from './components/dashboard/ExecutiveDashboard';
 import { RecruitmentModule } from './components/recruitment/RecruitmentModule';
 import { EmployeesModule } from './components/employees/EmployeesModule';
@@ -41,8 +43,42 @@ import { Breadcrumbs } from './components/common/Breadcrumbs';
 import { ToastContainer, showToast } from './components/common/Toast';
 import { Menu, X, Loader2 } from 'lucide-react';
 
+/**
+ * Fetch wrapper that surfaces REAL server errors (audit fix LEA-06):
+ * previously every handler assumed success, so a 400/403/409 (over-quota
+ * leave, locked payroll period, forbidden action) still showed a green
+ * "success" toast while nothing happened.
+ */
+async function apiFetch(url: string, init?: RequestInit): Promise<any> {
+  const res = await fetch(url, init);
+  let data: any = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  if (!res.ok) {
+    const err = new Error(data?.error || `درخواست ناموفق (${res.status})`) as Error & { status?: number; data?: any };
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+const s2 = (p: PayrollSlip, paid: PayrollSlip[]): PayrollSlip => paid.find((x) => x.id === p.id) || p;
+
+const jsonInit = (method: string, body: unknown): RequestInit => ({
+  method,
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+});
+
+
+
 export default function App() {
   const [currentRole, setCurrentRole] = useState<UserRole>(UserRole.HR_DIRECTOR);
+  const [sessionEmployeeId, setSessionEmployeeId] = useState<string>('emp-1');
   const [activeModule, setActiveModule] = useState<ModuleKey>('dashboard');
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
@@ -59,6 +95,7 @@ export default function App() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [attendances, setAttendances] = useState<any[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
+  const [leaveBalances, setLeaveBalances] = useState<LeaveBalance[]>([]);
   const [payrollSlips, setPayrollSlips] = useState<PayrollSlip[]>([]);
   const [performanceGoals, setPerformanceGoals] = useState<PerformanceGoal[]>([]);
   const [trainingCourses, setTrainingCourses] = useState<TrainingCourse[]>([]);
@@ -84,12 +121,20 @@ export default function App() {
   // Fetch initial data from Express backend
   const fetchData = async () => {
     try {
+      fetch('/api/auth/me')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.employeeId) setSessionEmployeeId(d.employeeId);
+          if (d?.role) setCurrentRole(d.role);
+        })
+        .catch(() => undefined);
       const [
         jobsRes,
         candsRes,
         empsRes,
         attRes,
         leaveRes,
+        balancesRes,
         payrollRes,
         goalsRes,
         coursesRes,
@@ -104,6 +149,7 @@ export default function App() {
         fetch('/api/employees').then((r) => r.json()),
         fetch('/api/attendance').then((r) => r.json()),
         fetch('/api/leave/requests').then((r) => r.json()),
+        fetch('/api/leave/balances').then((r) => r.json()),
         fetch('/api/payroll/slips').then((r) => r.json()),
         fetch('/api/performance/goals').then((r) => r.json()),
         fetch('/api/training/courses').then((r) => r.json()),
@@ -119,6 +165,7 @@ export default function App() {
       setEmployees(empsRes || []);
       setAttendances(attRes || []);
       setLeaveRequests(leaveRes || []);
+      setLeaveBalances(Array.isArray(balancesRes) ? balancesRes : []);
       setPayrollSlips(payrollRes || []);
       setPerformanceGoals(goalsRes || []);
       setTrainingCourses(coursesRes || []);
@@ -135,23 +182,32 @@ export default function App() {
     }
   };
 
+  /**
+   * Automation runs are IRREVERSIBLE-ish bulk operations (audit fix AIA-01):
+   * an explicit user confirmation is always required, the server rejects runs
+   * without confirm:true, and only HR_DIRECTOR may run them at all.
+   */
   const handleRunAutomation = async (taskIdOrCategory: string) => {
+    const task = automationTasks.find((t) => t.id === taskIdOrCategory);
+    const taskTitle = task?.title || taskIdOrCategory;
+    const confirmed = window.confirm(
+      `اجرای فرآیند اتوماسیون «${taskTitle}»؟\n\nاین عملیات روی داده‌های واقعی سامانه اثر می‌گذارد و تنها با تایید صریح شما اجرا می‌شود.`
+    );
+    if (!confirmed) {
+      showToast('اجرای اتوماسیون لغو شد', 'info');
+      return;
+    }
     try {
-      const res = await fetch('/api/automation/run', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ taskId: taskIdOrCategory }),
-      });
-      const data = await res.json();
+      const data = await apiFetch('/api/automation/run', jsonInit('POST', { taskId: taskIdOrCategory, confirm: true }));
       if (data.task) {
-        setAutomationTasks((prev) =>
-          prev.map((t) => (t.id === data.task.id ? data.task : t))
-        );
-        showToast(`فرآیند اتوماسیون با موفقیت اجرا شد: ${data.task.title}`, 'success');
+        setAutomationTasks((prev) => prev.map((t) => (t.id === data.task.id ? data.task : t)));
       }
-    } catch (err) {
+      showToast(data.message || 'فرآیند اتوماسیون اجرا شد', 'success');
+      // Side effects (finalized slips, recategorized candidates) must refresh.
+      fetchData();
+    } catch (err: any) {
       console.error('Automation run error:', err);
-      showToast('خطا در اجرای اتوماسیون', 'error');
+      showToast(err?.message || 'خطا در اجرای اتوماسیون', 'error');
     }
   };
 
@@ -159,36 +215,47 @@ export default function App() {
     fetchData();
   }, []);
 
+  /** Guarded module navigation (audit fix SEC-02). */
+  const selectModule = (mod: ModuleKey) => {
+    if (!MODULE_ACCESS[mod]?.includes(currentRole)) {
+      showToast('نقش کاربری شما اجازه دسترسی به این بخش را ندارد', 'error');
+      return;
+    }
+    setActiveModule(mod);
+  };
+
   // Handlers for Role & Actions
   const handleRoleChange = async (newRole: UserRole) => {
     setCurrentRole(newRole);
     try {
-      await fetch('/api/auth/switch-role', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: newRole }),
-      });
+      await apiFetch('/api/auth/switch-role', jsonInit('POST', { role: newRole }));
       showToast(`نقش کاربری به «${newRole}» تغییر یافت`, 'info');
-    } catch (err) {
+      // Data visibility is role-scoped on the server — reload everything and
+      // leave modules the new role may not access.
+      setActiveModule((mod) => (MODULE_ACCESS[mod]?.includes(newRole) ? mod : 'dashboard'));
+      fetchData();
+    } catch (err: any) {
       console.error(err);
+      showToast(err?.message || 'خطا در تغییر نقش کاربری', 'error');
     }
   };
 
   // Module 1: Recruitment handlers
   const handleUpdateCandidateStage = async (candidateId: string, nextStage: CandidateStage) => {
-    setCandidates((prev) =>
-      prev.map((c) => (c.id === candidateId ? { ...c, stage: nextStage } : c))
-    );
     try {
-      await fetch(`/api/candidates/${candidateId}/stage`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ stage: nextStage }),
-      });
+      const updated = await apiFetch(`/api/candidates/${candidateId}/stage`, jsonInit('PATCH', { stage: nextStage }));
+      if (updated?.createdEmployee) {
+        // HIRED: the server created the personnel file + onboarding checklist.
+        showToast('کارجو استخدام شد؛ پرونده پرسنلی و چک‌لیست آنبوردینگ خودکار ایجاد گردید', 'success');
+        fetchData();
+        return;
+      }
+      setCandidates((prev) => prev.map((c) => (c.id === candidateId ? updated : c)));
       showToast('مرحله کارجو با موفقیت در کانبان به‌روزرسانی شد', 'success');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast('خطا در به‌روزرسانی مرحله کارجو', 'error');
+      // 409 = illegal transition / unmet HIRED gate — show the real reason.
+      showToast(err?.message || 'خطا در به‌روزرسانی مرحله کارجو', 'error');
     }
   };
 
@@ -198,61 +265,35 @@ export default function App() {
     interviewType: string,
     notes?: string
   ) => {
-    setCandidates((prev) =>
-      prev.map((c) =>
-        c.id === candidateId
-          ? {
-              ...c,
-              interviewJalali,
-              interviewType,
-              interviewNotes: notes,
-              stage: CandidateStage.IN_PERSON_INTERVIEW,
-            }
-          : c
-      )
-    );
     try {
-      await fetch(`/api/candidates/${candidateId}/schedule-interview`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ interviewJalali, interviewType, interviewNotes: notes }),
-      });
+      const updated = await apiFetch(`/api/candidates/${candidateId}/schedule-interview`, jsonInit('POST', { interviewJalali, interviewType, interviewNotes: notes }));
+      setCandidates((prev) => prev.map((c) => (c.id === candidateId ? updated : c)));
       showToast('مصاحبه تخصصی حضوری با موفقیت تنظیم شد', 'success');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast('خطا در تنظیم مصاحبه', 'error');
+      showToast(err?.message || 'خطا در تنظیم مصاحبه', 'error');
     }
   };
 
   const handleToggleTalentPool = async (candidateId: string, inPool: boolean) => {
-    setCandidates((prev) =>
-      prev.map((c) => (c.id === candidateId ? { ...c, inTalentPool: inPool } : c))
-    );
     try {
-      await fetch(`/api/candidates/${candidateId}/talent-pool`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inTalentPool: inPool }),
-      });
+      const updated = await apiFetch(`/api/candidates/${candidateId}/talent-pool`, jsonInit('PATCH', { inTalentPool: inPool }));
+      setCandidates((prev) => prev.map((c) => (c.id === candidateId ? updated : c)));
       showToast(inPool ? 'کارجو به استخر استعدادها اضافه شد' : 'کارجو از استخر استعدادها خارج شد', 'info');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      showToast(err?.message || 'خطا در بروزرسانی استخر استعداد', 'error');
     }
   };
 
   const handleCreateJob = async (newJob: Partial<JobPosting>) => {
     try {
-      const res = await fetch('/api/jobs', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newJob),
-      });
-      const created = await res.json();
+      const created = await apiFetch('/api/jobs', jsonInit('POST', newJob));
       setJobs((prev) => [created, ...prev]);
       showToast(`موقعیت شغلی «${created.title}» با موفقیت افزوده شد`, 'success');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast('خطا در ثبت موقعیت شغلی', 'error');
+      showToast(err?.message || 'خطا در ثبت موقعیت شغلی', 'error');
     }
   };
 
@@ -272,50 +313,35 @@ export default function App() {
           ? `کارجوی گرامی جناب آقای / سرکار خانم ${candidate.fullName}،\nبا سلام، بدین‌وسیله از شما جهت مصاحبه تخصصی دعوت به عمل می‌آید.`
           : `کارجوی گرامی،\nبا تشکر از ارسال رزومه، مشخصات شما در استخر استعدادهای سازمانی ذخیره شد.`;
 
-      await fetch(`/api/candidates/${candidate.id}/draft-email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type, subject, body }),
-      });
+      await apiFetch(`/api/candidates/${candidate.id}/draft-email`, jsonInit('POST', { type, subject, body }));
 
       showToast(
-        `پیش‌نویس ایمیل ${type === 'INVITATION' ? 'دعوت به مصاحبه' : 'عدم احراز'} برای ${candidate.fullName} ذخیره شد`,
+        `پیش‌نویس ایمیل ${type === 'INVITATION' ? 'دعوت به مصاحبه' : 'عدم احراز'} برای ${candidate.fullName} ذخیره شد (ارسال خودکار انجام نمی‌شود)`,
         'info'
       );
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      showToast(err?.message || 'خطا در ذخیره پیش‌نویس ایمیل', 'error');
     }
   };
 
   // Module 2: Employee Handlers
   const handleCreateEmployee = async (newEmp: Partial<Employee>) => {
     try {
-      const res = await fetch('/api/employees', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newEmp),
-      });
-      const created = await res.json();
+      const created = await apiFetch('/api/employees', jsonInit('POST', newEmp));
       setEmployees((prev) => [...prev, created]);
       showToast(`پرونده پرسنلی همکار جدید «${created.fullName}» ثبت گردید`, 'success');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      showToast('خطا در ایجاد پرونده پرسنلی', 'error');
+      // Surface real validation errors (national-id checksum, duplicates, ...).
+      showToast(err?.message || 'خطا در ایجاد پرونده پرسنلی', 'error');
     }
   };
 
   // Module 3: Attendance Handlers
   const handleCheckInOut = async (type: 'CHECK_IN' | 'CHECK_OUT') => {
     try {
-      const res = await fetch('/api/attendance/check-in-out', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          employeeId: employees[0]?.id || 'emp-1',
-          type,
-        }),
-      });
-      const updated = await res.json();
+      const updated = await apiFetch('/api/attendance/check-in-out', jsonInit('POST', { type }));
       setAttendances((prev) => {
         const idx = prev.findIndex((a) => a.id === updated.id);
         if (idx >= 0) {
@@ -325,107 +351,171 @@ export default function App() {
         }
         return [updated, ...prev];
       });
-      showToast(type === 'CHECK_IN' ? 'ورود شما در ساعت جاری با موفقیت ثبت شد.' : 'خروج شما با موفقیت ثبت شد.', 'success');
-    } catch (err) {
+      showToast(
+        updated?.notice
+          ? updated.notice
+          : type === 'CHECK_IN'
+            ? 'ورود شما در ساعت جاری با موفقیت ثبت شد.'
+            : 'خروج شما با موفقیت ثبت شد.',
+        updated?.notice ? 'info' : 'success'
+      );
+    } catch (err: any) {
       console.error(err);
-      showToast('خطا در ثبت تردد', 'error');
+      showToast(err?.message || 'خطا در ثبت تردد', 'error');
     }
   };
 
+  /**
+   * Leave requests are validated against the statutory balance engine
+   * (audit fix LEA-01/02). The server derives the working-day count from the
+   * Jalali date range and rejects over-quota requests, so the response (not
+   * the form input) is what gets stored in state.
+   */
   const handleSubmitLeave = async (req: Partial<LeaveRequest>) => {
     try {
-      const res = await fetch('/api/leave/requests', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...req,
-          employeeId: employees[0]?.id || 'emp-1',
-        }),
-      });
-      const created = await res.json();
+      const created = await apiFetch('/api/leave/requests', jsonInit('POST', req));
       setLeaveRequests((prev) => [created, ...prev]);
-      showToast('درخواست مرخصی با موفقیت ارسال شد و در کارتابل بررسی قرار گرفت', 'success');
-    } catch (err) {
+      setLeaveBalances((prev) => (created?.balance ? prev.map((b) => (b.employeeId === created.balance.employeeId ? created.balance : b)) : prev));
+      showToast(
+        `درخواست مرخصی به مدت ${created?.daysCount ?? req.daysCount} روز کاری ثبت شد و در کارتابل بررسی مدیر قرار گرفت`,
+        'success'
+      );
+    } catch (err: any) {
       console.error(err);
-      showToast('خطا در ثبت درخواست مرخصی', 'error');
+      showToast(err?.message || 'خطا در ثبت درخواست مرخصی', 'error');
     }
   };
 
   const handleApproveLeave = async (id: string, approved: boolean, comment?: string) => {
     try {
-      const res = await fetch(`/api/leave/requests/${id}/approve`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: currentRole, approved, comment }),
-      });
-      const updated = await res.json();
+      const updated = await apiFetch(`/api/leave/requests/${id}/approve`, jsonInit('PATCH', { approved, comment }));
       setLeaveRequests((prev) => prev.map((l) => (l.id === id ? updated : l)));
+      if (updated?.balance) {
+        setLeaveBalances((prev) => prev.map((b) => (b.employeeId === updated.balance.employeeId ? updated.balance : b)));
+      }
       showToast(approved ? 'درخواست مرخصی تأیید شد' : 'درخواست مرخصی رد گردید', 'info');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      // 409 = insufficient statutory balance / already decided.
+      showToast(err?.message || 'خطا در بررسی درخواست مرخصی', 'error');
     }
   };
 
   // Module 4: Payroll Handlers
+  /**
+   * Payroll generation (audit fixes PAY-02/PAY-04/PAY-10): the year must have
+   * a configured statutory circular, new slips are DRAFT (not silently
+   * FINALIZED), and a period with FINALIZED slips requires an explicit
+   * force confirmation before it can be regenerated.
+   */
   const handleGeneratePayroll = async (monthJalali: number, yearJalali: number) => {
+    const run = async (force: boolean) =>
+      apiFetch('/api/payroll/generate', jsonInit('POST', { monthJalali, yearJalali, force }));
     try {
-      const res = await fetch('/api/payroll/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ monthJalali, yearJalali }),
-      });
-      const data = await res.json();
-      if (data.slips) {
-        setPayrollSlips(data.slips);
-        showToast('فیش‌های حقوقی با احتساب بیمه ۷٪ و مالیات پله‌ای صادر شد', 'success');
+      let data = await run(false);
+      setPayrollSlips((prev) => [
+        ...prev.filter((p) => !(p.yearJalali === yearJalali && p.monthJalali === monthJalali)),
+        ...data.slips,
+      ]);
+      const skippedNote = data.skipped?.length ? ` — ${data.skipped.length} پرونده بدون فیش (به دلایل ثبت‌شده)` : '';
+      showToast(`فیش‌های پیش‌نویس دوره با بیمه ۷٪ و مالیات پله‌ای بخشنامه ${yearJalali} تولید شد${skippedNote}`, 'success');
+    } catch (err: any) {
+      if (err?.status === 409 && err?.data?.requiresForce) {
+        const ok = window.confirm(
+          `${err.data.finalizedCount} فیش این دوره FINALIZED است.\nبازتولید، فیش‌های نهایی‌شده را با محاسبات جدید جایگزین می‌کند (فیش‌های پرداخت‌شده تغییر نمی‌کنند).\n\nادامه می‌دهید؟`
+        );
+        if (!ok) {
+          showToast('بازتولید فیش‌های دوره لغو شد', 'info');
+          return;
+        }
+        try {
+          const data = await run(true);
+          setPayrollSlips((prev) => [
+            ...prev.filter(
+              (p) => !(p.yearJalali === yearJalali && p.monthJalali === monthJalali && p.status !== PayrollStatus.PAID)
+            ),
+            ...data.slips,
+          ]);
+          showToast('فیش‌های دوره با تایید شما بازتولید شد', 'success');
+        } catch (e2: any) {
+          showToast(e2?.message || 'خطا در بازتولید فیش‌ها', 'error');
+        }
+        return;
       }
-    } catch (err) {
       console.error(err);
-      showToast('خطا در محاسبه حقوق', 'error');
+      showToast(err?.message || 'خطا در محاسبه حقوق', 'error');
     }
   };
 
   // Module 5: Performance Handlers
   const handleUpdateGoalProgress = async (id: string, progress: number) => {
-    setPerformanceGoals((prev) =>
-      prev.map((g) => (g.id === id ? { ...g, currentProgress: progress } : g))
-    );
     try {
-      await fetch(`/api/performance/goals/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentProgress: progress }),
-      });
+      const updated = await apiFetch(`/api/performance/goals/${id}`, jsonInit('PATCH', { currentProgress: progress }));
+      setPerformanceGoals((prev) => prev.map((g) => (g.id === id ? updated : g)));
       showToast('پیشرفت هدف سازمانی ثبت شد', 'info');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      showToast(err?.message || 'خطا در ثبت پیشرفت هدف', 'error');
     }
   };
 
   const handleCreateGoal = async (newGoal: Partial<PerformanceGoal>) => {
     try {
-      const res = await fetch('/api/performance/goals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newGoal),
-      });
-      const created = await res.json();
+      const created = await apiFetch('/api/performance/goals', jsonInit('POST', newGoal));
       setPerformanceGoals((prev) => [created, ...prev]);
       showToast('هدف عملکردی جدید با موفقیت اضافه شد', 'success');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      showToast(err?.message || 'خطا در ثبت هدف عملکردی', 'error');
+    }
+  };
+
+  /** DRAFT → FINALIZED for a period (audit fix PAY-10: real lifecycle). */
+  const handleFinalizePayroll = async (yearJalali: number, monthJalali: number) => {
+    try {
+      const data = await apiFetch('/api/payroll/finalize', jsonInit('POST', { yearJalali, monthJalali }));
+      setPayrollSlips((prev) => prev.map((p) => (data.slips.some((s: PayrollSlip) => s.id === p.id) ? { ...p, status: PayrollStatus.FINALIZED } : p)));
+      showToast(data.message || 'فیش‌ها نهایی شدند', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'خطا در نهایی‌سازی فیش‌ها', 'error');
+    }
+  };
+
+  /** FINALIZED → PAID (locks the period). */
+  const handleMarkPaid = async (yearJalali: number, monthJalali: number) => {
+    const ok = window.confirm(
+      `ثبت پرداخت فیش‌های دوره ${yearJalali}/${monthJalali}؟\n\nپس از ثبت پرداخت، این دوره قفل شده و فیش‌ها قابل تغییر نیستند.`
+    );
+    if (!ok) return;
+    try {
+      const data = await apiFetch('/api/payroll/mark-paid', jsonInit('POST', { yearJalali, monthJalali }));
+      setPayrollSlips((prev) => prev.map((p) => (data.slips.some((s: PayrollSlip) => s.id === p.id) ? s2(p, data.slips) : p)));
+      showToast(data.message || 'پرداخت ثبت شد', 'success');
+    } catch (err: any) {
+      showToast(err?.message || 'خطا در ثبت پرداخت', 'error');
+    }
+  };
+
+  // Module 6: real course enrollment (audit fix MOD-04: alert() → API)
+  const handleEnrollCourse = async (courseId: string, employeeId?: string) => {
+    try {
+      const enrollment = await apiFetch('/api/training/enroll', jsonInit('POST', { courseId, employeeId }));
+      showToast(`ثبت‌نام دوره با موفقیت انجام شد (${enrollment.enrolledAtJalali})`, 'success');
+      return true;
+    } catch (err: any) {
+      showToast(err?.message || 'خطا در ثبت‌نام دوره', 'error');
+      return false;
     }
   };
 
   // Module 7: Checklists Handlers
   const handleToggleChecklist = async (id: string) => {
-    setChecklists((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, isCompleted: !c.isCompleted } : c))
-    );
     try {
-      await fetch(`/api/checklists/${id}/toggle`, { method: 'PATCH' });
-    } catch (err) {
+      const updated = await apiFetch(`/api/checklists/${id}/toggle`, { method: 'PATCH' });
+      setChecklists((prev) => prev.map((c) => (c.id === id ? updated : c)));
+    } catch (err: any) {
       console.error(err);
+      showToast(err?.message || 'خطا در بروزرسانی چک‌لیست', 'error');
     }
   };
 
@@ -479,7 +569,8 @@ export default function App() {
               {/* Breadcrumbs & Quick Context Switcher */}
               <Breadcrumbs
                 activeModule={activeModule}
-                onSelectModule={setActiveModule}
+                onSelectModule={selectModule}
+                currentRole={currentRole}
                 isPwaPortalMode={isPwaPortalMode}
                 onTogglePwaPortalMode={() => setIsPwaPortalMode(!isPwaPortalMode)}
               />
@@ -492,7 +583,9 @@ export default function App() {
                   departments={departments}
                   jobs={jobs}
                   candidates={candidates}
-                  onNavigate={(mod) => setActiveModule(mod)}
+                  attendances={attendances}
+                  employees={employees}
+                  onNavigate={(mod) => selectModule(mod)}
                   onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
                   onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
                   onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
@@ -523,6 +616,7 @@ export default function App() {
               {activeModule === 'employees' && (
                 <EmployeesModule
                   employees={employees}
+                  currentRole={currentRole}
                   onCreateEmployee={handleCreateEmployee}
                 />
               )}
@@ -533,7 +627,9 @@ export default function App() {
                   currentRole={currentRole}
                   attendances={attendances}
                   leaveRequests={leaveRequests}
+                  leaveBalances={leaveBalances}
                   employees={employees}
+                  sessionEmployeeId={sessionEmployeeId}
                   onCheckInOut={handleCheckInOut}
                   onSubmitLeaveRequest={handleSubmitLeave}
                   onApproveLeave={handleApproveLeave}
@@ -544,7 +640,11 @@ export default function App() {
               {activeModule === 'payroll' && (
                 <PayrollModule
                   payrollSlips={payrollSlips}
+                  currentRole={currentRole}
+                  employees={employees}
                   onGeneratePayroll={handleGeneratePayroll}
+                  onFinalizePayroll={handleFinalizePayroll}
+                  onMarkPaid={handleMarkPaid}
                 />
               )}
 
@@ -559,7 +659,13 @@ export default function App() {
 
               {/* Module 6: Training & Skills */}
               {activeModule === 'training' && (
-                <TrainingModule courses={trainingCourses} skillMatrix={skillMatrix} />
+                <TrainingModule
+                  courses={trainingCourses}
+                  skillMatrix={skillMatrix}
+                  currentRole={currentRole}
+                  employees={employees}
+                  onEnroll={handleEnrollCourse}
+                />
               )}
 
               {/* Module 7: Checklists Onboarding */}
@@ -571,7 +677,7 @@ export default function App() {
               )}
 
               {/* Module 8: Analytics & KPIs */}
-              {activeModule === 'analytics' && <AnalyticsModule metrics={metrics} />}
+              {activeModule === 'analytics' && <AnalyticsModule metrics={metrics} candidates={candidates} />}
             </>
           )}
         </main>
@@ -580,7 +686,8 @@ export default function App() {
       {/* Mobile Bottom Navigation Bar (1-Click Instant Access) */}
       <BottomNav
         activeModule={activeModule}
-        onSelectModule={setActiveModule}
+        onSelectModule={selectModule}
+        currentRole={currentRole}
         onOpenMobileMenu={() => setIsMobileSidebarOpen(true)}
       />
 
@@ -595,7 +702,8 @@ export default function App() {
       <CommandPalette
         isOpen={isCommandPaletteOpen}
         onClose={() => setIsCommandPaletteOpen(false)}
-        onSelectModule={setActiveModule}
+        onSelectModule={selectModule}
+        currentRole={currentRole}
         onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
         onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
         jobs={jobs}
