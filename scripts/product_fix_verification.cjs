@@ -324,21 +324,32 @@ async function run() {
     assert(/شبیه‌سازی|فایل/.test(r.data.error + (r.data.hint || '')), 'message must explain honest mode');
   });
 
-  await test('REC: bulk-upload with real text file creates UNSCORED candidate', async () => {
+  await test('REC: bulk-upload with real text file → real evaluation, honest labeling, no auto-stage (merged PR#5)', async () => {
     const r = await api('POST', '/api/candidates/bulk-upload', {
       jobId: 'job-1',
       files: [
         { name: 'rezume_آرش_کریمی.txt', text: 'آرش کریمی، ۶ سال سابقه توسعه React و TypeScript در شرکت‌های فناوری ایرانی، مسلط به طراحی سامانه‌های مقیاس‌پذیر و کار تیمی.' },
-        { name: 'scan.pdf' }, // no text → must be skipped, not fabricated
+        { name: 'scan.pdf' }, // no extractable text → must be skipped with a reason, never fabricated
       ],
     });
     assert(r.status === 200 && r.data.success, `upload failed: ${JSON.stringify(r.data)}`);
     assert(r.data.processedCount === 1, `expected 1 processed, got ${r.data.processedCount}`);
     assert(r.data.skippedCount === 1, 'text-less file must be skipped');
+    assert(Array.isArray(r.data.skipped) && /استخراج/.test(r.data.skipped[0].reason || ''), 'skip must carry an honest reason');
     const c = r.data.sampleCandidates[0];
-    assert(c.overallScore === undefined || c.overallScore === null, 'RNG score is back');
-    assert(c.stage === 'INITIAL_SCREENING', 'auto-stage manipulation is back');
+    // Merged behavior: real evaluation at upload time (Gemini when key present,
+    // otherwise the deterministic local engine — labeled, never RNG).
+    assert(typeof c.overallScore === 'number' && c.overallScore >= 0 && c.overallScore <= 10, `score must come from real evaluation, got ${c.overallScore}`);
+    assert(c.criteriaScores && typeof c.criteriaScores === 'object' && Object.keys(c.criteriaScores).length > 0, 'criteria scores missing');
+    assert(typeof c.executiveSummary === 'string' && c.executiveSummary.length > 0, 'executive summary missing (PR#5 fields)');
+    if (r.data.aiAvailable === false) {
+      assert(c.aiAvailable === false, 'candidate must carry the local-engine label (D4)');
+      assert(/موتور ارزیابی محلی/.test(r.data.message || ''), 'fallback must be disclosed in the message');
+    }
+    assert(c.stage === 'INITIAL_SCREENING', 'D5 violated: stage auto-moved at upload');
+    assert(c.email === '' && c.phone === '', 'fabricated identity is back (REC-08)');
     assert(c.fullName.includes('آرش'), `name not extracted from filename: ${c.fullName}`);
+    assert(!String(c.appliedAtJalali).startsWith('۱۴۰۳'), 'fabricated applied date is back');
   });
 
   await test('REC: new candidate has NO fabricated 7.5 default score', async () => {
