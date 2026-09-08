@@ -146,12 +146,15 @@ model Employee {
   department       String            // واحد سازمانی
   jobTitle         String            // پست / سمت سازمانی
   hireDateJalali   String            // تاریخ استخدام شمسی
-  baseSalary       BigInt            // حقوق پایه ماهانه (ریال / تومان)
+  baseSalaryToman  BigInt            @map("baseSalary") // حقوق پایه ماهانه (تومان)
   maritalStatus    String            // وضعیت تاهل
   childrenCount    Int               @default(0) // تعداد فرزندان جهت حق اولاد
   bankIban         String?           // شماره شبا بانکی
   directManagerId  String?           // شناسه مدیر مستقیم برای چارت و تایید مرخصی
   status           String            @default("ACTIVE") // وضعیت اشتغال (شاغل، قطع همکاری، تعلیق)
+  ssoContributionDays   Int          @default(0) // سابقه پرداخت حق بیمه (روز)
+  commuteAllowanceToman BigInt       @default(0) // کمک‌هزینه ایاب و ذهاب
+  avatarUrl        String?           // آدرس تصویر پروفایل
   user             User?
   documents        EmployeeDocument[]
   jobHistories     JobHistory[]

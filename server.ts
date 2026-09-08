@@ -22,6 +22,7 @@ import {
   CandidateStage,
   ChecklistItem,
   Employee,
+  JobHistoryItem,
   LeaveRequest,
   LeaveStatus,
   LeaveType,
@@ -990,7 +991,7 @@ async function startServer() {
     res.json(canViewEmployeeFully(emp) ? emp : sanitizeEmployee(emp, role, dbStore.sessionEmployeeId));
   });
 
-  app.post('/api/employees', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+  app.post('/api/employees', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
     const b = req.body || {};
     const fullName = String(b.fullName || '').trim();
     const nationalIdRaw = String(b.nationalId || '').trim();
@@ -1073,10 +1074,11 @@ async function startServer() {
     };
     dbStore.employees.push(newEmp);
     dbStore.markDirty();
+    await dbStore.dbCreateEmployee(newEmp);
     res.status(201).json(newEmp);
   });
 
-  app.patch('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+  app.patch('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
     const emp = dbStore.employees.find(e => e.id === req.params.id);
     if (!emp) return res.status(404).json({ error: 'پرسنل یافت نشد' });
     const b = req.body || {};
@@ -1104,16 +1106,18 @@ async function startServer() {
       return res.status(400).json({ error: 'کد ملی نامعتبر است' });
     }
 
+    let newJobHistory: JobHistoryItem | undefined;
     if (salaryChanged || titleChanged || deptChanged) {
       emp.jobHistories = emp.jobHistories || [];
-      emp.jobHistories.push({
+      newJobHistory = {
         id: `jh-${Date.now()}`,
         changeType: salaryChanged && !titleChanged && !deptChanged ? 'SALARY_CHANGE' : titleChanged ? 'PROMOTION' : 'TRANSFER',
         previousTitle: `${emp.jobTitle} — ${toPersianDigits(emp.baseSalaryToman)} تومان`,
         newTitle: `${String(b.jobTitle ?? emp.jobTitle).trim()} — ${toPersianDigits(Number(b.baseSalaryToman ?? emp.baseSalaryToman))} تومان`,
         effectiveDateJalali: now.jalaliString,
         description: deptChanged ? `انتقال به ${String(b.department).trim()}` : 'تغییر ثبت‌شده توسط منابع انسانی',
-      });
+      };
+      emp.jobHistories.push(newJobHistory);
     }
 
     const editable = [
@@ -1121,19 +1125,26 @@ async function startServer() {
       'jobTitle', 'baseSalaryToman', 'maritalStatus', 'childrenCount', 'bankIban',
       'directManagerId', 'status', 'ssoContributionDays', 'commuteAllowanceToman',
     ] as const;
+    const patch: Record<string, unknown> = {};
     for (const key of editable) {
-      if (b[key] !== undefined) (emp as any)[key] = typeof b[key] === 'string' ? b[key].trim() : b[key];
+      if (b[key] !== undefined) {
+        const value = typeof b[key] === 'string' ? b[key].trim() : b[key];
+        (emp as any)[key] = value;
+        patch[key] = value;
+      }
     }
     if (b.hireDateJalali !== undefined) {
       if (!parseJalaliDateString(b.hireDateJalali)) return res.status(400).json({ error: 'تاریخ استخدام نامعتبر است' });
       emp.hireDateJalali = String(b.hireDateJalali).trim();
+      patch.hireDateJalali = emp.hireDateJalali;
     }
 
     dbStore.markDirty();
+    await dbStore.dbUpdateEmployee(emp.id, patch, newJobHistory);
     res.json(emp);
   });
 
-  app.delete('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+  app.delete('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
     const idx = dbStore.employees.findIndex(e => e.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'پرسنل یافت نشد' });
     const id = req.params.id;
@@ -1149,6 +1160,7 @@ async function startServer() {
     dbStore.employees.splice(idx, 1);
     dbStore.checklistItems = dbStore.checklistItems.filter(c => c.employeeId !== id);
     dbStore.markDirty();
+    await dbStore.dbDeleteEmployee(id);
     res.json({ success: true, deletedId: id });
   });
 
@@ -1750,6 +1762,8 @@ async function startServer() {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
+
+  await dbStore.initEmployeesFromDb();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`سامانه منابع انسانی کارا بر روی پورت ${PORT} آماده به کار است.`);

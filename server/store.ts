@@ -37,7 +37,18 @@ import {
   SourcedCandidate,
   JobSyndicationChannel,
   KnockoutQuestion,
+  JobHistoryItem,
 } from '../src/types';
+import { isDatabaseConfigured } from './db';
+import {
+  loadAllEmployees,
+  countEmployees,
+  seedEmployees,
+  createEmployeeInDb,
+  updateEmployeeInDb,
+  deleteEmployeeInDb,
+} from './employeeRepo';
+
 export class HRMSStore {
   public currentUserRole: UserRole = UserRole.HR_DIRECTOR;
   /**
@@ -1391,6 +1402,44 @@ export class HRMSStore {
     process.on('exit', onExit);
     process.on('SIGINT', () => { onExit(); process.exit(0); });
     process.on('SIGTERM', () => { onExit(); process.exit(0); });
+  }
+
+  /**
+   * Phase 1 of the Supabase persistence work (employees only).
+   * Called once at boot, after loadSnapshot(). If DATABASE_URL isn't set,
+   * or the database is unreachable, this is a no-op and the app keeps
+   * running on the in-memory/JSON-snapshot data exactly as before —
+   * it must never prevent the server from starting.
+   */
+  public async initEmployeesFromDb(): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try {
+      const existing = await countEmployees();
+      if (existing === 0 && this.employees.length > 0) {
+        console.log(`[db] Employee table is empty — migrating ${this.employees.length} demo employee(s) into Supabase...`);
+        await seedEmployees(this.employees);
+      }
+      this.employees = await loadAllEmployees();
+      console.log(`[db] Loaded ${this.employees.length} employee(s) from Supabase.`);
+    } catch (err) {
+      console.warn('[db] Could not load employees from Supabase — continuing on in-memory data:', err);
+    }
+  }
+
+  /** Write-through helpers: best-effort mirror of an in-memory employee mutation into Supabase. */
+  public async dbCreateEmployee(e: Employee): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await createEmployeeInDb(e); } catch (err) { console.warn('[db] Failed to persist new employee to Supabase:', err); }
+  }
+
+  public async dbUpdateEmployee(id: string, patch: Partial<Employee>, newJobHistory?: JobHistoryItem): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await updateEmployeeInDb(id, patch, newJobHistory as any); } catch (err) { console.warn('[db] Failed to persist employee update to Supabase:', err); }
+  }
+
+  public async dbDeleteEmployee(id: string): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await deleteEmployeeInDb(id); } catch (err) { console.warn('[db] Failed to delete employee from Supabase:', err); }
   }
 
   /** Mark state mutated; a debounced write follows. Call from every mutating endpoint. */
