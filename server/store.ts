@@ -67,6 +67,13 @@ export class HRMSStore {
   async deleteJob(id: string) {
     return this.prisma.jobPosting.delete({ where: { id } });
   }
+  // Module 2: Candidates (start)
+  async getCandidates() {
+    return this.prisma.candidate.findMany({ include: { job: true } });
+  }
+  async getCandidateById(id: string) {
+    return this.prisma.candidate.findUnique({ where: { id }, include: { job: true } });
+  }
 
   public jobs: JobPosting[] = [
     {
