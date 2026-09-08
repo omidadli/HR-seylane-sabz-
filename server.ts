@@ -175,8 +175,11 @@ async function startServer() {
   // -------------------------------------------------------------
   // Module 1: Recruitment & Hiring Endpoints
   // -------------------------------------------------------------
-  app.get('/api/jobs', (req, res) => {
-    res.json(dbStore.jobs);
+  app.get('/api/jobs', async (req, res) => {
+    try {
+    const jobs = await (dbStore.getJobs ? dbStore.getJobs() : Promise.resolve(dbStore.jobs));
+    res.json(jobs);
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   app.post('/api/jobs', requireRole(...HR_AND_MANAGER), (req, res) => {
@@ -216,7 +219,7 @@ async function startServer() {
     res.status(201).json(newJob);
   });
 
-  app.patch('/api/jobs/:id', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.patch('/api/jobs/:id', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const job = dbStore.jobs.find(j => j.id === req.params.id);
     if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
     const { title, department, employmentType, location, description, requirements, status } = req.body;
