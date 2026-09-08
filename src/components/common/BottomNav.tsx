@@ -6,25 +6,30 @@ import {
   Wallet,
   Menu,
 } from 'lucide-react';
-import { ModuleKey } from './Sidebar';
+import { ModuleKey, canAccessModule } from './Sidebar';
+import { UserRole } from '../../types';
 
 interface BottomNavProps {
   activeModule: ModuleKey;
   onSelectModule: (module: ModuleKey) => void;
   onOpenMobileMenu: () => void;
+  currentRole?: UserRole;
 }
 
 export const BottomNav: React.FC<BottomNavProps> = ({
   activeModule,
   onSelectModule,
   onOpenMobileMenu,
+  currentRole = UserRole.HR_DIRECTOR,
 }) => {
+  // Tabs the role may actually open (audit fix SEC-02); employees get their
+  // own slips via the personnel portal, not the payroll admin module.
   const tabs = [
     { key: 'dashboard' as ModuleKey, label: 'پیشخوان', icon: LayoutDashboard },
     { key: 'recruitment' as ModuleKey, label: 'استخدام', icon: UserPlus },
     { key: 'attendance' as ModuleKey, label: 'تردد', icon: Clock },
     { key: 'payroll' as ModuleKey, label: 'حقوق', icon: Wallet },
-  ];
+  ].filter((t) => canAccessModule(currentRole, t.key));
 
   return (
     <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2 py-1.5 shadow-lg">

@@ -1,4 +1,5 @@
 import React from 'react';
+import { UserRole } from '../../types';
 import {
   Users,
   UserPlus,
@@ -13,6 +14,7 @@ import {
   X,
   Bot,
   Building2,
+  Lock,
 } from 'lucide-react';
 
 export type ModuleKey =
@@ -26,9 +28,31 @@ export type ModuleKey =
   | 'checklists'
   | 'analytics';
 
+/**
+ * Role-based module visibility (audit fix SEC-02). Payroll data is
+ * HR-confidential, company-wide analytics too; recruitment is limited to HR
+ * and hiring managers. The API enforces the same rules server-side — this map
+ * only keeps the navigation honest about what the role can actually open.
+ */
+export const MODULE_ACCESS: Record<ModuleKey, UserRole[]> = {
+  dashboard: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  recruitment: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER],
+  employees: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  attendance: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  payroll: [UserRole.HR_DIRECTOR],
+  performance: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  training: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  checklists: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  analytics: [UserRole.HR_DIRECTOR],
+};
+
+export const canAccessModule = (role: UserRole, module: ModuleKey): boolean =>
+  MODULE_ACCESS[module]?.includes(role) ?? false;
+
 interface SidebarProps {
   activeModule: ModuleKey;
   onSelectModule: (module: ModuleKey) => void;
+  currentRole?: UserRole;
   isMobileOpen?: boolean;
   onCloseMobile?: () => void;
 }
@@ -36,6 +60,7 @@ interface SidebarProps {
 export const Sidebar: React.FC<SidebarProps> = ({
   activeModule,
   onSelectModule,
+  currentRole = UserRole.HR_DIRECTOR,
   isMobileOpen = false,
   onCloseMobile,
 }) => {
@@ -77,7 +102,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     {
       key: 'payroll',
       label: 'حقوق و دستمزد',
-      description: 'فیش حقوقی، بیمه ۷٪ و مالیات پله‌ای ۱۴۰۳',
+      description: 'فیش حقوقی بر مبنای بخشنامه سال، بیمه ۷٪ و مالیات پله‌ای',
       icon: Wallet,
     },
     {
@@ -146,19 +171,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {menuItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeModule === item.key;
+            const allowed = canAccessModule(currentRole, item.key);
 
             return (
               <button
                 key={item.key}
                 type="button"
+                disabled={!allowed}
+                title={allowed ? undefined : 'دسترسی این بخش برای نقش کاربری شما محدود است'}
                 onClick={() => {
+                  if (!allowed) return;
                   onSelectModule(item.key);
                   if (onCloseMobile) onCloseMobile();
                 }}
-                className={`w-full flex items-start gap-3 px-3.5 py-2.5 rounded-2xl text-right transition-all group relative cursor-pointer ${
-                  isActive
-                    ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-700/20'
-                    : 'text-slate-700 hover:bg-slate-100/80 hover:text-slate-900 font-medium'
+                className={`w-full flex items-start gap-3 px-3.5 py-2.5 rounded-2xl text-right transition-all group relative ${
+                  !allowed
+                    ? 'opacity-45 cursor-not-allowed text-slate-500'
+                    : isActive
+                      ? 'bg-emerald-600 text-white font-bold shadow-md shadow-emerald-700/20 cursor-pointer'
+                      : 'text-slate-700 hover:bg-slate-100/80 hover:text-slate-900 font-medium cursor-pointer'
                 }`}
               >
                 <div
@@ -173,8 +204,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between gap-1.5">
-                    <span className="text-xs font-extrabold truncate">{item.label}</span>
-                    {item.badge && (
+                    <span className="text-xs font-extrabold truncate flex items-center gap-1">
+                      {item.label}
+                      {!allowed && <Lock className="w-3 h-3 shrink-0" />}
+                    </span>
+                    {item.badge && allowed && (
                       <span
                         className={`text-[9px] font-black px-2 py-0.5 rounded-full flex items-center gap-0.5 ${
                           isActive

@@ -7,11 +7,13 @@ import {
   Laptop,
   CheckCircle,
 } from 'lucide-react';
-import { ModuleKey } from './Sidebar';
+import { ModuleKey, canAccessModule } from './Sidebar';
+import { UserRole } from '../../types';
 
 interface BreadcrumbsProps {
   activeModule: ModuleKey;
   onSelectModule: (module: ModuleKey) => void;
+  currentRole?: UserRole;
   isPwaPortalMode: boolean;
   onTogglePwaPortalMode: () => void;
 }
@@ -21,7 +23,7 @@ const moduleTitles: Record<ModuleKey, { title: string; subtitle: string }> = {
   recruitment: { title: 'جذب و استخدام', subtitle: 'کانبان، رزومه‌ها، ارزیابی هوش مصنوعی و مصاحبه‌ها' },
   employees: { title: 'پرونده پرسنلی', subtitle: 'احکام کارگزینی، مشخصات همکاران و چارت سازمانی' },
   attendance: { title: 'تردد و مرخصی‌ها', subtitle: 'ثبت ورود/خروج کارخانجات اشتهارد و سقف ۲۶ روزه' },
-  payroll: { title: 'حقوق و دستمزد', subtitle: 'صدور مکانیزه فیش، بیمه ۷٪ و مالیات پله‌ای ۱۴۰۳' },
+  payroll: { title: 'حقوق و دستمزد', subtitle: 'صدور فیش بر مبنای بخشنامه سال، بیمه ۷٪ و مالیات پله‌ای' },
   performance: { title: 'مدیریت عملکرد', subtitle: 'اهداف فصلی OKR، ارزیابی شایستگی و بازخورد' },
   training: { title: 'آموزش و مهارت‌ها', subtitle: 'دوره‌های سازمانی، استانداردهای GMP و ماتریس مهارت' },
   checklists: { title: 'ورود و خروج همکاران', subtitle: 'چک‌لیست‌های ان‌بوردینگ و تسویه‌حساب مرحله‌ای' },

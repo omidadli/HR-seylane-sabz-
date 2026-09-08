@@ -71,6 +71,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   // File states
   const [stagedFiles, setStagedFiles] = useState<StagedResumeFile[]>([]);
   const [fileCount, setFileCount] = useState<number>(200);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isExtractingZip, setIsExtractingZip] = useState(false);
   const [zipMessage, setZipMessage] = useState<{ name: string; count: number } | null>(null);
@@ -294,39 +295,27 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     setProcessMode('batch');
   };
 
-  // Start processing
+  // Start processing — HONEST MODE (audit fixes REC-01/REC-03, decision D4):
+  // only real staged files are sent; the simulated "batch of 200" mode and the
+  // fabricated priority/review/rejected ratios are gone. Scoring is NOT part
+  // of upload anymore — each candidate is evaluated individually afterwards.
   const handleStartBulkProcessing = async () => {
+    setUploadError(null);
+    if (stagedFiles.length === 0) {
+      setUploadError(
+        'هیچ فایل واقعی انتخاب نشده است. حالت شبیه‌سازی (تولید کارجویان تصادفی) از سامانه حذف شده است — لطفاً فایل‌های رزومه را بارگذاری کنید.'
+      );
+      return;
+    }
+
     setIsProcessing(true);
-    setProgress(5);
-    setProgressStageText('در حال خواندن ساختار فایل‌ها و استخراج متون رزومه...');
+    setProgress(15);
+    setProgressStageText('در حال ارسال فایل‌های واقعی و استخراج متون رزومه...');
     setProcessedStats(null);
 
-    const stages = [
-      { p: 25, text: 'استخراج متون رزومه‌ها و تشخیص نام، مهارت‌ها و سوابق کارجویان...' },
-      { p: 55, text: 'ارزیابی هوشمند شایستگی‌ها و تطبیق با الزامات موقعیت شغلی در Gemini...' },
-      { p: 85, text: 'محاسبه امتیاز نهایی، رتبه‌بندی اولویت‌ها و تولید بازخوردهای غربالگری...' },
-    ];
-
-    let stageIdx = 0;
     const interval = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 90) {
-          clearInterval(interval);
-          return 90;
-        }
-        const next = prev + Math.floor(Math.random() * 12) + 6;
-        if (stageIdx < stages.length && next >= stages[stageIdx].p) {
-          setProgressStageText(stages[stageIdx].text);
-          stageIdx++;
-        }
-        return next;
-      });
-    }, 200);
-
-    const actualCountToProcess =
-      stagedFiles.length > 0 && processMode === 'exact'
-        ? stagedFiles.length
-        : Math.max(stagedFiles.length || 10, fileCount);
+      setProgress((prev) => (prev >= 90 ? 90 : prev + 10));
+    }, 250);
 
     try {
       const res = await fetch('/api/candidates/bulk-upload', {
@@ -334,27 +323,33 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           jobId: selectedJobId,
-          filesCount: actualCountToProcess,
           files: stagedFiles.map((f) => ({
             name: f.name,
             size: f.size,
             text: f.text,
             sourceZip: f.sourceZip,
           })),
-          mode: processMode,
         }),
       });
-
       clearInterval(interval);
-      setProgress(100);
-      setProgressStageText('ارزیابی و غربالگری هوشمند با موفقیت به پایان رسید.');
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        setProgress(0);
+        setUploadError(
+          data?.error || 'ثبت رزومه‌ها ناموفق بود' +
+          (data?.skipped?.length ? ` (${data.skipped.length} فایل بدون متن قابل استخراج)` : '')
+        );
+        return;
+      }
+
+      setProgress(100);
+      setProgressStageText('ثبت رزومه‌های واقعی با موفقیت انجام شد.');
       setProcessedStats({
-        total: data.processedCount || actualCountToProcess,
-        priority: data.interviewPriorityCount || Math.round(actualCountToProcess * 0.25),
-        review: data.needsReviewCount || Math.round(actualCountToProcess * 0.45),
-        rejected: data.initialRejectionCount || Math.round(actualCountToProcess * 0.3),
+        total: data.processedCount || 0,
+        priority: data.interviewPriorityCount || 0,
+        review: data.needsReviewCount || 0,
+        rejected: data.initialRejectionCount || 0,
         sampleCandidates: data.sampleCandidates || [],
       });
 
@@ -362,7 +357,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     } catch (err) {
       clearInterval(interval);
       console.error(err);
-      setIsProcessing(false);
+      setUploadError('خطای شبکه در ارسال فایل‌ها به سرور');
     } finally {
       setIsProcessing(false);
     }
@@ -793,83 +788,30 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 ))}
               </div>
 
-              {/* Mode Selection / File Count Controls */}
+              {/* Real-file processing note (simulation mode removed — audit REC-03) */}
               <div className="pt-2 border-t border-slate-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="processMode"
-                      checked={processMode === 'exact'}
-                      onChange={() => {
-                        setProcessMode('exact');
-                        setFileCount(stagedFiles.length);
-                      }}
-                      className="text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span className="text-slate-700 font-medium text-[11px]">
-                      ارزیابی دقیق همین {toPersianDigits(stagedFiles.length)} رزومه انتخاب‌شده
-                    </span>
-                  </label>
-
-                  <label className="flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="processMode"
-                      checked={processMode === 'batch'}
-                      onChange={() => setProcessMode('batch')}
-                      className="text-emerald-600 focus:ring-emerald-500"
-                    />
-                    <span className="text-slate-700 font-medium text-[11px]">
-                      شبیه‌سازی ابعاد بالا (حداقل ۲۰۰ رزومه)
-                    </span>
-                  </label>
-                </div>
-
-                {processMode === 'batch' && (
-                  <div className="inline-flex items-center gap-1.5 bg-white px-2.5 py-1 rounded-lg border border-slate-200 text-xs">
-                    <span className="text-slate-500 text-[11px]">حجم شبیه‌سازی:</span>
-                    <input
-                      type="number"
-                      min={10}
-                      max={250}
-                      step={10}
-                      value={fileCount}
-                      disabled={isProcessing}
-                      onChange={(e) =>
-                        setFileCount(Math.max(10, parseInt(e.target.value, 10) || 10))
-                      }
-                      className="w-14 px-1.5 py-0.5 bg-slate-50 border border-slate-300 rounded text-center font-bold text-emerald-800 text-xs"
-                    />
-                    <span className="text-slate-400 text-[11px]">فایل</span>
-                  </div>
-                )}
+                <span className="text-slate-700 font-medium text-[11px]">
+                  ثبت همین {toPersianDigits(stagedFiles.length)} رزومه انتخاب‌شده (بدون شبیه‌سازی)
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  امتیازدهی در این مرحله انجام نمی‌شود؛ هر کارجو پس از ثبت با «ارزیابی هوش مصنوعی» امتیاز واقعی می‌گیرد.
+                </span>
               </div>
             </div>
           )}
 
-          {/* Quick Simulation Counter when no files selected yet */}
+          {/* Honest empty state: real files are required */}
           {stagedFiles.length === 0 && (
             <div className="flex items-center justify-between bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs">
               <span className="text-slate-600 font-medium">
-                یا پردازش دسته‌ای مقیاس بزرگ رزومه‌های ورودی را تنظیم نمایید:
+                برای ثبت کارجو، فایل واقعی رزومه انتخاب کنید. سامانه کارجوی شبیه‌سازی‌شده تولید نمی‌کند.
               </span>
-              <div className="inline-flex items-center gap-2 bg-white px-3 py-1 rounded-xl border border-slate-200 shadow-2xs">
-                <span className="text-slate-500 text-[11px]">تعداد پیش‌فرض:</span>
-                <input
-                  type="number"
-                  min={10}
-                  max={250}
-                  step={10}
-                  value={fileCount}
-                  disabled={isProcessing}
-                  onChange={(e) =>
-                    setFileCount(Math.max(10, parseInt(e.target.value, 10) || 10))
-                  }
-                  className="w-16 px-2 py-0.5 bg-slate-50 border border-slate-300 rounded-lg text-center font-bold text-emerald-800 text-xs"
-                />
-                <span className="text-slate-400 font-medium">رزومه</span>
-              </div>
+            </div>
+          )}
+
+          {uploadError && (
+            <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-800 px-3.5 py-2.5 rounded-xl text-xs font-bold">
+              <span>{uploadError}</span>
             </div>
           )}
 
@@ -894,8 +836,8 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
               </div>
 
               <div className="text-[11px] text-slate-500 text-center">
-                سیستم در حال ارزیابی متون رزومه‌ها، استخراج شایستگی‌ها و رتبه‌بندی منطبق با شرح شغل «
-                {selectedJob?.title}» است.
+                سیستم در حال ثبت رزومه‌های واقعی و استخراج متن آن‌ها برای موقعیت «
+                {selectedJob?.title}» است. امتیازدهی و رتبه‌بندی در مرحله «ارزیابی هوش مصنوعی» هر کارجو انجام می‌شود.
               </div>
             </div>
           )}
@@ -907,34 +849,39 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 <span className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   <span>
-                    پردازش گروهی {toPersianDigits(processedStats.total)} رزومه برای «
-                    {selectedJob?.title}» با موفقیت پایان یافت
+                    ثبت {toPersianDigits(processedStats.total)} رزومه واقعی برای «
+                    {selectedJob?.title}» با موفقیت انجام شد
                   </span>
                 </span>
               </div>
 
               <div className="grid grid-cols-3 gap-2 text-center text-xs">
                 <div className="bg-white p-2.5 rounded-xl border border-emerald-200 shadow-2xs">
-                  <div className="text-[10px] text-slate-500 mb-0.5">اولویت مصاحبه (+۷)</div>
+                  <div className="text-[10px] text-slate-500 mb-0.5">ثبت‌شده در پایپ‌لاین</div>
                   <div className="text-base font-extrabold text-emerald-700">
-                    {toPersianDigits(processedStats.priority)}
+                    {toPersianDigits(processedStats.total)}
                   </div>
                 </div>
 
                 <div className="bg-white p-2.5 rounded-xl border border-amber-200 shadow-2xs">
-                  <div className="text-[10px] text-slate-500 mb-0.5">نیازمند بررسی (۵-۷)</div>
+                  <div className="text-[10px] text-slate-500 mb-0.5">در انتظار ارزیابی</div>
                   <div className="text-base font-extrabold text-amber-700">
                     {toPersianDigits(processedStats.review)}
                   </div>
                 </div>
 
-                <div className="bg-white p-2.5 rounded-xl border border-rose-200 shadow-2xs">
-                  <div className="text-[10px] text-slate-500 mb-0.5">رد اولیه (&lt;۵)</div>
-                  <div className="text-base font-extrabold text-rose-700">
+                <div className="bg-white p-2.5 rounded-xl border border-slate-200 shadow-2xs">
+                  <div className="text-[10px] text-slate-500 mb-0.5">بدون متن قابل استخراج</div>
+                  <div className="text-base font-extrabold text-slate-700">
                     {toPersianDigits(processedStats.rejected)}
                   </div>
                 </div>
               </div>
+
+              <p className="text-[10px] text-slate-600 leading-relaxed">
+                هیچ امتیازی به صورت تصادفی تولید نشده است. دسته‌بندی «اولویت مصاحبه / نیازمند بررسی / رد اولیه»
+                فقط پس از ارزیابی واقعی هر رزومه با معیارهای وزنی موقعیت شغلی انجام می‌شود.
+              </p>
 
               {processedStats.sampleCandidates && processedStats.sampleCandidates.length > 0 && (
                 <div className="bg-white/80 p-2.5 rounded-xl border border-emerald-200 text-xs">
@@ -951,8 +898,10 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                         <span className="text-slate-500 truncate max-w-[200px]">
                           {c.resumeFileName}
                         </span>
-                        <span className="font-bold text-emerald-700">
-                          امتیاز: {toPersianDigits(c.overallScore)}
+                        <span className="font-bold text-slate-500">
+                          {typeof c.overallScore === 'number'
+                            ? `امتیاز: ${toPersianDigits(c.overallScore)}`
+                            : 'ارزیابی‌نشده'}
                         </span>
                       </div>
                     ))}
@@ -971,7 +920,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                 {toPersianDigits(stagedFiles.length)} فایل رزومه آماده بارگذاری و تطبیق
               </span>
             ) : (
-              <span>حالت شبیه‌سازی ۲۰۰+ رزومه فعال است</span>
+              <span>برای شروع، حداقل یک فایل رزومه واقعی انتخاب کنید</span>
             )}
           </div>
 
@@ -987,22 +936,22 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
             <button
               type="button"
-              disabled={isProcessing || isExtractingZip}
+              disabled={isProcessing || isExtractingZip || stagedFiles.length === 0}
               onClick={handleStartBulkProcessing}
               className="px-5 py-2.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 disabled:bg-slate-300 text-white rounded-xl shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
             >
               {isProcessing ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>در حال ارزیابی...</span>
+                  <span>در حال ثبت...</span>
                 </>
               ) : (
                 <>
                   <Sparkles className="w-4 h-4" />
                   <span>
-                    {stagedFiles.length > 0 && processMode === 'exact'
-                      ? `شروع ارزیابی ${toPersianDigits(stagedFiles.length)} رزومه انتخاب‌شده`
-                      : `شروع پردازش ${toPersianDigits(fileCount)} رزومه`}
+                    {stagedFiles.length > 0
+                      ? `ثبت ${toPersianDigits(stagedFiles.length)} رزومه انتخاب‌شده`
+                      : 'انتخاب فایل رزومه'}
                   </span>
                 </>
               )}

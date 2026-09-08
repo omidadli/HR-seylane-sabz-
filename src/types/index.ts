@@ -151,6 +151,10 @@ export interface Employee {
   avatarUrl?: string;
   documents?: EmployeeDocument[];
   jobHistories?: JobHistoryItem[];
+  /** سابقه پرداخت حق بیمه (روز) — شرط ۷۲۰ روز برای حق اولاد (ماده ۸۶ تامین اجتماعی). */
+  ssoContributionDays?: number;
+  /** کمک‌هزینه ایاب و ذهاب (مزایای موردی هر همکار — پیش‌فرض صفر). */
+  commuteAllowanceToman?: number;
 }
 
 // ---------------- Module 3 Types ----------------
@@ -163,7 +167,27 @@ export interface AttendanceRecord {
   checkOut?: string;
   delayMinutes: number;
   overtimeHours: number;
+  /** ترک زودهنگام (دقیقه) — خروج پیش از پایان شیفت ۱۷:۰۰ به وقت تهران. */
+  earlyLeaveMinutes?: number;
   status: 'PRESENT' | 'ABSENT' | 'LEAVE' | 'MISSION';
+}
+
+/** Derived leave entitlement (Art. 64/66) — computed server-side per employee/year. */
+export interface LeaveYearBalance {
+  yearJalali: number;
+  entitlementDays: number;
+  carryoverDays: number;
+  usedDays: number;
+  pendingDays: number;
+  remainingDays: number;
+}
+
+export interface LeaveBalance {
+  employeeId: string;
+  employeeName?: string;
+  currentYear: number;
+  years: Record<number, LeaveYearBalance>;
+  remainingNow: number;
 }
 
 export interface LeaveRequest {
@@ -207,6 +231,14 @@ export interface PayrollSlip {
   eidiReserveToman: number;      // پاداش و عیدی سالانه
   status: PayrollStatus;
   paidAtJalali?: string;
+  // --- Extended transparency fields (payroll audit fixes) ---
+  seniorityBaseToman?: number;   // پایه سنوات (≥۱ سال سابقه)
+  marriageAllowanceToman?: number; // حق تأهل
+  overtimeHours?: number;        // ساعات اضافه‌کاری واقعی از تردد
+  payableDays?: number;          // روزهای قابل پرداخت دوره (تناسب استخدام/مرخصی بدون حقوق)
+  unpaidLeaveDays?: number;      // روزهای مرخصی بدون حقوق کسر شده
+  statutoryYearNote?: string;    // بخشنامه مبنای محاسبات
+  generatedAtJalali?: string;    // تاریخ واقعی تولید فیش
 }
 
 // ---------------- Module 5 Types ----------------
@@ -257,12 +289,15 @@ export interface ChecklistItem {
 // ---------------- Module 8 Types ----------------
 export interface HRDashboardMetrics {
   turnoverRatePct: number;
-  averageTimeToHireDays: number;
-  costPerHireToman: number;
+  /** null = redacted for non-HR roles (HR-confidential planning KPI). */
+  averageTimeToHireDays: number | null;
+  /** null = redacted for non-HR roles. */
+  costPerHireToman: number | null;
   activeHeadcount: number;
   openPositionsCount: number;
   pendingLeavesCount: number;
-  monthlyPayrollTotalToman: number;
+  /** null = redacted for non-HR roles (company-wide payroll is confidential). */
+  monthlyPayrollTotalToman: number | null;
 }
 
 export interface HRMetrics {
@@ -274,6 +309,8 @@ export interface HRMetrics {
 
 // ---------------- AI Agent Types ----------------
 export interface AgentMessage {
+  /** false = response came from the local rule-based engine, not live AI (honest labeling). */
+  aiAvailable?: boolean;
   id: string;
   sender: 'user' | 'agent';
   text: string;

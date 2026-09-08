@@ -1,11 +1,24 @@
-import React, { useState } from 'react';
-import { TrainingCourse, SkillMatrixItem } from '../../types';
+import React, { useEffect, useState } from 'react';
+import { Employee, SkillMatrixItem, TrainingCourse, UserRole } from '../../types';
 import { toPersianDigits } from '../../utils/jalali';
 import { BookOpen, Star, CheckCircle } from 'lucide-react';
+
+interface TrainingEnrollment {
+  id: string;
+  courseId: string;
+  employeeId: string;
+  employeeName: string;
+  enrolledAtJalali: string;
+  status: 'ENROLLED' | 'COMPLETED';
+}
 
 interface TrainingModuleProps {
   courses: TrainingCourse[];
   skillMatrix: SkillMatrixItem[];
+  currentRole?: UserRole;
+  employees?: Employee[];
+  /** Real enrollment API (audit fix MOD-04: the button was alert()-only). */
+  onEnroll?: (courseId: string, employeeId?: string) => Promise<boolean>;
 }
 
 const COURSE_STATUS_META: Record<
@@ -71,11 +84,68 @@ function LevelBars({ level, max = 5 }: { level: number; max?: number }) {
 export const TrainingModule: React.FC<TrainingModuleProps> = ({
   courses,
   skillMatrix,
+  currentRole = UserRole.HR_DIRECTOR,
+  employees = [],
+  onEnroll,
 }) => {
   const [activeTab, setActiveTab] = useState<'courses' | 'matrix'>('courses');
+  const [enrollments, setEnrollments] = useState<TrainingEnrollment[]>([]);
+  const [enrollingCourseId, setEnrollingCourseId] = useState<string | null>(null);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>('');
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/training/enrollments')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d) => { if (alive && Array.isArray(d)) setEnrollments(d); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+
+  const enrolledCourseIds = new Set(
+    enrollments.filter((e) => !selectedEmployeeId || e.employeeId === selectedEmployeeId).map((e) => e.courseId)
+  );
+
+  const handleEnroll = async (courseId: string) => {
+    if (!onEnroll) return;
+    setEnrollingCourseId(courseId);
+    try {
+      const ok = await onEnroll(courseId, selectedEmployeeId || undefined);
+      if (ok) {
+        const fresh = await fetch('/api/training/enrollments').then((r) => (r.ok ? r.json() : null));
+        if (Array.isArray(fresh)) setEnrollments(fresh);
+      }
+    } finally {
+      setEnrollingCourseId(null);
+    }
+  };
 
   return (
     <div className="space-y-4">
+      {/* Enrollee selector — HR enrolls on behalf of a specific employee;
+          other roles always enroll themselves (server enforces this too). */}
+      {currentRole === UserRole.HR_DIRECTOR && employees.length > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2 bg-white p-3 rounded-2xl border border-slate-200 shadow-2xs">
+          <label className="text-xs font-bold text-slate-700" htmlFor="enroll-employee">
+            ثبت‌نام برای همکار:
+          </label>
+          <select
+            id="enroll-employee"
+            value={selectedEmployeeId}
+            onChange={(e) => setSelectedEmployeeId(e.target.value)}
+            className="px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 rounded-xl font-bold text-slate-800 max-w-xs"
+          >
+            <option value="">خودم (کاربر جاری)</option>
+            {employees.map((e) => (
+              <option key={e.id} value={e.id}>{e.fullName} — {e.department}</option>
+            ))}
+          </select>
+          <span className="text-[11px] text-slate-500">
+            {toPersianDigits(enrollments.length)} ثبت‌نام در سامانه
+          </span>
+        </div>
+      )}
+
       {/* Header bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
         <div>
@@ -174,13 +244,21 @@ export const TrainingModule: React.FC<TrainingModuleProps> = ({
                     <span>همراه با گواهی حضور</span>
                   </span>
 
-                  <button
-                    type="button"
-                    onClick={() => alert(`ثبت‌نام شما در دوره ${c.title} با موفقیت انجام شد.`)}
-                    className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg font-bold text-xs"
-                  >
-                    ثبت نام در دوره
-                  </button>
+                  {enrolledCourseIds.has(c.id) ? (
+                    <span className="px-3 py-1 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-bold text-[11px] flex items-center gap-1">
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      ثبت‌نام شده
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={enrollingCourseId === c.id || !onEnroll}
+                      onClick={() => handleEnroll(c.id)}
+                      className="px-3 py-1 bg-emerald-50 hover:bg-emerald-100 disabled:opacity-60 text-emerald-800 rounded-lg font-bold text-xs"
+                    >
+                      {enrollingCourseId === c.id ? 'در حال ثبت...' : 'ثبت نام در دوره'}
+                    </button>
+                  )}
                 </div>
               </div>
             );

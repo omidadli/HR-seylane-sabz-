@@ -22,8 +22,8 @@ import {
   Factory,
 } from 'lucide-react';
 import { motion } from 'motion/react';
-import { HRDashboardMetrics, HoldingDepartment, JobPosting, Candidate, UserRole } from '../../types';
-import { toPersianDigits, getTodayJalali, formatJalaliDateReadable } from '../../utils/jalali';
+import { HRDashboardMetrics, HoldingDepartment, JobPosting, Candidate, UserRole, AttendanceRecord, Employee } from '../../types';
+import { toPersianDigits, getTodayJalali, formatJalaliDate, formatJalaliDateReadable } from '../../utils/jalali';
 import { ModuleKey } from '../common/Sidebar';
 
 interface ExecutiveDashboardProps {
@@ -32,6 +32,9 @@ interface ExecutiveDashboardProps {
   departments: HoldingDepartment[];
   jobs: JobPosting[];
   candidates: Candidate[];
+  /** Real attendance records — used for today's actual presence rate. */
+  attendances?: AttendanceRecord[];
+  employees?: Employee[];
   onNavigate: (module: ModuleKey) => void;
   onOpenVoiceAssistant: () => void;
   onOpenJobGenerator: () => void;
@@ -44,6 +47,8 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
   departments,
   jobs,
   candidates,
+  attendances = [],
+  employees = [],
   onNavigate,
   onOpenVoiceAssistant,
   onOpenJobGenerator,
@@ -52,12 +57,24 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
   const today = getTodayJalali();
   const formattedDate = formatJalaliDateReadable(today);
 
-  // Compute stats
+  // Compute stats — ALL from live data (audit fix MOD-05: the dashboard used
+  // to show hardcoded fictions like "۹۶.۸٪ attendance" and "۴۲.۵ میلیارد").
   const activeJobsCount = jobs.filter((j) => j.status === 'ACTIVE').length;
   const totalResumes = jobs.reduce((acc, j) => acc + (j.applicationsCount || 0), 0);
   const priorityCandidatesCount = candidates.filter(
     (c) => c.category === 'INTERVIEW_PRIORITY'
   ).length;
+
+  const todayJalaliStr = formatJalaliDate(today, true);
+  const presentToday = attendances.filter(
+    (a) => a.dateJalali === todayJalaliStr && (a.status === 'PRESENT' || a.checkIn)
+  ).length;
+  const activeHeadcount = employees.filter((e) => e.status === 'ACTIVE').length;
+  const attendanceRatePct =
+    activeHeadcount > 0 ? Math.round((presentToday / activeHeadcount) * 1000) / 10 : null;
+
+  const isHR = currentRole === UserRole.HR_DIRECTOR;
+  const payrollTotal = metrics.monthlyPayrollTotalToman;
 
   const brands = [
     {
@@ -177,14 +194,14 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-black text-slate-900">
-              {toPersianDigits(metrics.activeHeadcount || 1350)}
+              {toPersianDigits(metrics.activeHeadcount)}
             </span>
             <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg">
-              +۳.۸٪ این ماه
+              پرونده‌های فعال سامانه
             </span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 font-medium">
-            توزیع در ۴ کارخانه و دفتر مرکزی وزرا
+            محاسبه زنده از پرونده‌های پرسنلی ثبت‌شده
           </div>
         </div>
 
@@ -201,10 +218,10 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-black text-slate-900">
-              {toPersianDigits(activeJobsCount || metrics.openPositionsCount || 39)}
+              {toPersianDigits(activeJobsCount)}
             </span>
             <span className="text-xs font-bold text-teal-700 bg-teal-50 px-2 py-0.5 rounded-lg">
-              {toPersianDigits(totalResumes || 320)} رزومه
+              {toPersianDigits(totalResumes)} رزومه
             </span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 font-medium">
@@ -225,39 +242,57 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
           </div>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-black text-slate-900">
-              {toPersianDigits('۹۶.۸')}٪
+              {attendanceRatePct === null ? '—' : `${toPersianDigits(attendanceRatePct)}٪`}
             </span>
             <span className="text-xs font-bold text-sky-700 bg-sky-50 px-2 py-0.5 rounded-lg">
-              شیفت صبح و عصر
+              {toPersianDigits(presentToday)} ورود ثبت‌شده امروز
             </span>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 font-medium">
-            {toPersianDigits(metrics.pendingLeavesCount || 7)} مرخصی در انتظار بررسی مدیر
+            {toPersianDigits(metrics.pendingLeavesCount)} مرخصی در انتظار بررسی
           </div>
         </div>
 
-        {/* Card 4: Monthly Payroll */}
+        {/* Card 4: Monthly Payroll — HR-only (confidential), computed from the
+            latest generated payroll period; was a hardcoded "۴۲.۵ میلیارد" fiction. */}
         <div
-          onClick={() => onNavigate('payroll')}
-          className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-emerald-300 transition-all cursor-pointer group relative overflow-hidden"
+          onClick={() => isHR && onNavigate('payroll')}
+          className={`bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-emerald-300 transition-all group relative overflow-hidden ${isHR ? 'cursor-pointer' : ''}`}
         >
           <div className="flex items-center justify-between mb-3">
-            <span className="text-xs font-bold text-slate-500">هزینه حقوق و مزایای ماه جاری</span>
+            <span className="text-xs font-bold text-slate-500">
+              {isHR ? 'ناخالص آخرین دوره حقوقی' : 'دسترسی حقوق و دستمزد'}
+            </span>
             <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-700 flex items-center justify-center group-hover:scale-105 transition-transform">
               <Wallet className="w-5 h-5" />
             </div>
           </div>
-          <div className="flex items-baseline gap-2">
-            <span className="text-2xl sm:text-3xl font-black text-slate-900">
-              {toPersianDigits('۴۲.۵')}
-            </span>
-            <span className="text-xs font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-lg">
-              میلیارد تومان
-            </span>
-          </div>
-          <div className="text-[11px] text-slate-400 mt-2 font-medium">
-            شامل بیمه تامین اجتماعی و مالیات حقوق
-          </div>
+          {isHR ? (
+            <>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl sm:text-3xl font-black text-slate-900">
+                  {typeof payrollTotal === 'number' && payrollTotal > 0
+                    ? toPersianDigits((payrollTotal / 1_000_000_000).toFixed(2))
+                    : '—'}
+                </span>
+                <span className="text-xs font-bold text-amber-800 bg-amber-50 px-2 py-0.5 rounded-lg">
+                  میلیارد تومان
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-2 font-medium">
+                جمع فیش‌های تولیدشده آخرین دوره (شامل بیمه و مالیات)
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-baseline gap-2">
+                <span className="text-lg font-black text-slate-400">محدود به منابع انسانی</span>
+              </div>
+              <div className="text-[11px] text-slate-400 mt-2 font-medium">
+                داده‌های مالی حقوق برای نقش شما قابل نمایش نیست — فیش شخصی خود را در بخش تردد/پرتال پرسنلی ببینید.
+              </div>
+            </>
+          )}
         </div>
       </div>
 

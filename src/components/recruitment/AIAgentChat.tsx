@@ -83,16 +83,27 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
     setIsLoading(true);
 
     try {
+      // Thread the visible conversation so the agent retains context
+      // (audit fix AIA-03: chat used to be stateless per message).
+      const history = messages
+        .filter((m) => m.id !== 'msg-init')
+        .slice(-6)
+        .map((m) => ({ role: m.sender === 'user' ? 'user' : 'assistant', text: m.text }));
+
       const res = await fetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: query,
           jobId: activeJobId || 'job-1',
+          history,
         }),
       });
 
-      if (!res.ok) throw new Error('پاسخی از سرور دریافت نشد');
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => null);
+        throw new Error(errBody?.error || 'پاسخی از سرور دریافت نشد');
+      }
       const data = await res.json();
 
       const agentMsg: AgentMessage = {
@@ -103,6 +114,7 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
         radarData: data.radarData,
         emailDraftPreview: data.emailDraftPreview,
         suggestedActions: data.suggestedActions,
+        aiAvailable: data.aiAvailable !== false,
       };
 
       setMessages((prev) => [...prev, agentMsg]);
@@ -110,7 +122,7 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
       const errorMsg: AgentMessage = {
         id: `msg-err-${Date.now()}`,
         sender: 'agent',
-        text: 'متاسفانه در پردازش درخواست خطایی رخ داد. لطفاً دوباره تلاش نمایید.',
+        text: `متاسفانه در پردازش درخواست خطایی رخ داد: ${(err as Error)?.message || 'خطای نامشخص'}. لطفاً دوباره تلاش نمایید.`,
         timestamp: new Date().toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -129,7 +141,8 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
     return radarData.criteria.map((crit) => {
       const row: any = { criterion: crit };
       radarData.candidates.forEach((candName) => {
-        row[candName] = radarData.scores[candName]?.[crit] || 6.5;
+        const v = radarData.scores[candName]?.[crit];
+        row[candName] = typeof v === 'number' ? v : null;
       });
       return row;
     });
@@ -199,6 +212,15 @@ export const AIAgentChat: React.FC<AIAgentChatProps> = ({
                   }`}
                 >
                   <p className="whitespace-pre-wrap font-sans">{msg.text}</p>
+
+                  {isAgent && msg.aiAvailable === false && (
+                    <div className="mt-3 pt-2 border-t border-amber-200 flex items-start gap-1.5 text-[10px] font-bold text-amber-800">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>
+                        پاسخ توسط موتور محلی سامانه تولید شده است (مدل زبانی هوش مصنوعی در دسترس نبود). اعداد و دسته‌بندی‌های نمایشی مبتنی بر داده‌های واقعی ثبت‌شده در سامانه است و هیچ اقدام خودکاری انجام نشده است.
+                      </span>
+                    </div>
+                  )}
 
                   <div
                     className={`mt-2 text-[10px] text-end font-medium ${
