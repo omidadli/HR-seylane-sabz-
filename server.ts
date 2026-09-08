@@ -609,107 +609,180 @@ async function startServer() {
     res.json(cand);
   });
 
-  // Bulk resume upload — HONEST MODE (audit fixes REC-01/REC-03, decisions D4/D5):
-  // only real uploaded files are processed; no simulated candidates, no random
-  // names, no RNG scores, no auto-rejections. Imported candidates start
-  // UNSCORED (NEEDS_REVIEW) until a real AI/manual evaluation runs.
-  app.post('/api/candidates/bulk-upload', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
-    const { jobId, files } = req.body;
-    const targetJob = dbStore.jobs.find(j => j.id === jobId);
-    if (!targetJob) {
-      return res.status(400).json({ error: 'موقعیت شغلی هدف برای بارگذاری رزومه‌ها مشخص نیست' });
-    }
-    const uploadedFiles: Array<{ name: string; size?: number; text?: string; sourceZip?: string }> =
-      Array.isArray(files) ? files : [];
-    if (uploadedFiles.length === 0) {
-      return res.status(400).json({
-        error: 'هیچ فایل رزومه‌ای ارسال نشد',
-        hint: 'حالت شبیه‌سازی (تولید کارجوی تصادفی بدون فایل واقعی) از سامانه حذف شده است. لطفاً فایل‌های واقعی رزومه را بارگذاری کنید.',
-      });
-    }
+  // Bulk resume upload — MERGED: upstream real-resume-screening (client-side
+  // text extraction + real AI scoring via evaluateCandidateWithCriteria) with
+  // the audit remediation guards (REC-01/02/08, SEC-01, LOC-02, D4/D5):
+  // - HR_DIRECTOR only (server-enforced RBAC).
+  // - Only real files whose text was actually extracted client-side are scored;
+  //   unparseable files (e.g. scanned/image PDFs) are skipped WITH a reason —
+  //   never faked, never randomly scored.
+  // - Scores come from Gemini when GEMINI_API_KEY is present; otherwise from
+  //   the deterministic local engine and every result is labeled
+  //   aiAvailable:false (D4) so the UI can show the honest source.
+  // - Per D5 the AI never auto-moves pipeline stages: every imported candidate
+  //   starts at INITIAL_SCREENING; the category (even INITIAL_REJECTION) is an
+  //   advisory badge for human review, not an automatic rejection.
+  // - No fabricated identities: email/phone stay blank until real parsed data.
+  // - Timestamps come from the single Asia/Tehran source (LOC-02).
+  const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
+    let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
+    clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
+    clean = clean.replace(/[-_]/g, ' ').trim();
+    // If the filename carries a real, meaningful name, use it — otherwise fall
+    // back to a plain, honest placeholder label (never a fabricated identity).
+    if (clean.length >= 3 && !/^\d+$/.test(clean)) return clean;
+    return `متقاضی شماره ${index + 1}`;
+  };
 
-    const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
-      let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
-      clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
-      clean = clean.replace(/[-_]/g, ' ').trim();
-      if (clean.length >= 3 && !/^\d+$/.test(clean)) return clean;
-      return `کارجوی بدون نام (فایل ${index + 1})`;
-    };
-
-    const now = tehranNow();
-    const imported: any[] = [];
-    const skipped: Array<{ name: string; reason: string }> = [];
-
-    uploadedFiles.forEach((file, i) => {
-      const resumeText = String(file.text || '').trim();
-      if (resumeText.length < 20) {
-        skipped.push({
-          name: file.name,
-          reason: 'محتوای متنی رزومه استخراج نشده است (فقط فایل‌های متنی قابل پردازش هستند) — نیازمند استخراج متن PDF/DOCX',
-        });
-        return;
+  // Runs async tasks with a bounded concurrency so a batch of ~200 resumes
+  // doesn't fire 200 simultaneous Gemini requests (rate limits / timeouts).
+  async function runWithConcurrencyLimit<T, R>(
+    items: T[],
+    limit: number,
+    worker: (item: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let cursor = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const current = cursor++;
+        results[current] = await worker(items[current], current);
       }
-      const fullName = extractCandidateNameFromFilename(file.name, i);
-      imported.push({
+    });
+    await Promise.all(runners);
+    return results;
+  }
+
+  app.post('/api/candidates/bulk-upload', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
+    try {
+      const { jobId, files } = req.body;
+      const targetJob = dbStore.jobs.find(j => j.id === jobId);
+      if (!targetJob) {
+        return res.status(400).json({ error: 'موقعیت شغلی هدف برای بارگذاری رزومه‌ها مشخص نیست' });
+      }
+      const incomingFiles: Array<{ name: string; size?: number; text?: string; sourceZip?: string }> =
+        Array.isArray(files) ? files : [];
+      if (incomingFiles.length === 0) {
+        return res.status(400).json({
+          error: 'هیچ فایل رزومه‌ای ارسال نشد',
+          hint: 'حالت شبیه‌سازی (تولید کارجوی تصادفی بدون فایل واقعی) از سامانه حذف شده است. لطفاً فایل‌های واقعی رزومه را بارگذاری کنید.',
+        });
+      }
+
+      // Only resumes whose text was actually extracted client-side can be
+      // scored by the AI. Files that failed extraction (e.g. scanned/image
+      // PDFs with no selectable text) are reported back with a reason, not faked.
+      const MIN_TEXT_LENGTH = 30;
+      const hasText = (f: { text?: string }) => typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH;
+      const validFiles = incomingFiles.filter(hasText);
+      const skipped = incomingFiles.filter(f => !hasText(f)).map(f => ({
+        name: f.name,
+        reason: 'متن رزومه استخراج نشد (فایل اسکن‌شده/تصویری یا بدون متن قابل‌خواندن) — بدون متن واقعی، امتیازی تولید نمی‌شود',
+      }));
+
+      if (validFiles.length === 0) {
+        return res.status(400).json({
+          error: 'هیچ متن قابل‌استخراجی از رزومه‌های ارسالی یافت نشد. لطفاً از فایل‌های PDF/Word متنی (نه اسکن تصویری) استفاده کنید.',
+          skippedCount: skipped.length,
+          skipped,
+        });
+      }
+
+      const evalCriteria = targetJob.criteria || [];
+      const evalScoringMethod = targetJob.scoringMethod || 'WEIGHTED_AVG';
+      const evalAiRigor = targetJob.aiRigor || 'BALANCED';
+      const evalInstructions = targetJob.evaluationInstructions;
+      const evalPriority = targetJob.interviewPriorityThreshold ?? 7.0;
+      const evalRejection = targetJob.initialRejectionThreshold ?? 5.0;
+
+      // Concurrency of 5 keeps ~200 resumes well within Gemini rate limits
+      // while still processing them in parallel batches, not one-by-one.
+      const evaluations = await runWithConcurrencyLimit(validFiles, 5, async (file, i) => {
+        const fullName = extractCandidateNameFromFilename(file.name, i);
+        const result = await evaluateCandidateWithCriteria({
+          jobTitle: targetJob.title,
+          department: targetJob.department,
+          candidateName: fullName,
+          resumeText: file.text as string,
+          criteria: evalCriteria,
+          scoringMethod: evalScoringMethod,
+          aiRigor: evalAiRigor,
+          evaluationInstructions: evalInstructions,
+          interviewPriorityThreshold: evalPriority,
+          initialRejectionThreshold: evalRejection,
+        });
+        return { file, fullName, result };
+      });
+
+      const now = tehranNow();
+      const newCandidatesBatch = evaluations.map(({ file, fullName, result }, i) => ({
         id: `cand-bulk-${Date.now()}-${i}`,
         jobId: targetJob.id,
         jobTitle: targetJob.title,
         fullName,
+        // No fabricated identities (REC-08): contact fields stay blank until
+        // real parsed/entered data exists.
         email: '',
         phone: '',
         resumeFileName: file.name,
-        resumeText,
-        // NO fabricated score/category: real evaluation happens per candidate.
-        overallScore: undefined,
-        category: undefined,
+        resumeText: file.text as string,
+        overallScore: result.overallScore,
+        category: result.category,
+        // D5: category is an advisory badge; the stage never auto-moves —
+        // no automatic REJECTED stage from AI/local scoring.
         stage: CandidateStage.INITIAL_SCREENING,
-        strengths: [],
-        weaknesses: [],
-        resumeQuotes: [],
-        criteriaScores: {},
-        inTalentPool: false,
+        strengths: result.strengths,
+        weaknesses: result.weaknesses,
+        resumeQuotes: result.resumeQuotes,
+        criteriaScores: result.criteriaScores,
+        criteriaFeedback: result.criteriaFeedback,
+        executiveSummary: result.executiveSummary,
+        // Honest labeling (D4): false = deterministic local engine, not live AI.
+        aiAvailable: result.aiAvailable !== false,
+        inTalentPool: result.category === CandidateCategory.INITIAL_REJECTION && result.overallScore >= 4.5,
         appliedAtJalali: now.jalaliString,
         sourceZip: file.sourceZip,
-      });
-    });
+      }));
 
-    if (imported.length === 0) {
-      return res.status(400).json({
-        error: 'هیچ رزومه‌ای قابل ثبت نبود',
+      // Store the processed batch. A global cap keeps the in-memory store
+      // bounded; when the cap is hit the oldest bulk-imported candidates are
+      // evicted first.
+      const MAX_CANDIDATES = 1000;
+      dbStore.candidates.unshift(...newCandidatesBatch);
+      const overflow = dbStore.candidates.length - MAX_CANDIDATES;
+      if (overflow > 0) {
+        const bulkIdx: number[] = [];
+        dbStore.candidates.forEach((c, idx) => {
+          if (c.id.startsWith('cand-bulk-')) bulkIdx.push(idx);
+        });
+        bulkIdx.sort((a, b) => b - a);
+        for (const idx of bulkIdx.slice(0, overflow)) {
+          dbStore.candidates.splice(idx, 1);
+        }
+      }
+      targetJob.applicationsCount += newCandidatesBatch.length;
+      dbStore.markDirty();
+
+      const usedLocalEngine = newCandidatesBatch.some(c => c.aiAvailable === false);
+      res.json({
+        success: true,
+        processedCount: newCandidatesBatch.length,
         skippedCount: skipped.length,
         skipped,
-        hint: 'برای امتیازدهی واقعی، متن رزومه باید در دسترس باشد (فایل‌های متنی یا استخراج‌شده).',
+        skippedFiles: skipped.map(x => x.name),
+        aiAvailable: !usedLocalEngine,
+        interviewPriorityCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INTERVIEW_PRIORITY).length,
+        needsReviewCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.NEEDS_REVIEW).length,
+        initialRejectionCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INITIAL_REJECTION).length,
+        sampleCandidates: newCandidatesBatch.slice(0, 5),
+        message: usedLocalEngine
+          ? `${toPersianDigits(newCandidatesBatch.length)} رزومه با موتور ارزیابی محلی (بدون Gemini) امتیازدهی و ثبت شد — نتایج با برچسب «موتور محلی» نمایش داده می‌شود. دسته‌بندی‌ها پیشنهادی است و مرحله هیچ کارجویی خودکار تغییر نکرد.`
+          : `${toPersianDigits(newCandidatesBatch.length)} رزومه ارزیابی و ثبت شد. دسته‌بندی‌ها پیشنهادی است و مرحله هیچ کارجویی خودکار تغییر نکرد.`,
       });
+    } catch (err: any) {
+      console.error('Bulk resume screening error:', err);
+      res.status(500).json({ error: 'خطا در پردازش و ارزیابی هوشمند رزومه‌ها', details: err?.message });
     }
-
-    // Keep the in-memory store bounded; evict oldest bulk imports first.
-    const MAX_CANDIDATES = 1000;
-    dbStore.candidates.unshift(...imported);
-    const overflow = dbStore.candidates.length - MAX_CANDIDATES;
-    if (overflow > 0) {
-      const bulkIdx: number[] = [];
-      dbStore.candidates.forEach((c, idx) => {
-        if (c.id.startsWith('cand-bulk-')) bulkIdx.push(idx);
-      });
-      bulkIdx.sort((a, b) => b - a);
-      for (const idx of bulkIdx.slice(0, overflow)) {
-        dbStore.candidates.splice(idx, 1);
-      }
-    }
-    targetJob.applicationsCount += imported.length;
-    dbStore.markDirty();
-
-    res.json({
-      success: true,
-      processedCount: imported.length,
-      skippedCount: skipped.length,
-      skipped,
-      interviewPriorityCount: 0,
-      needsReviewCount: imported.length,
-      initialRejectionCount: 0,
-      sampleCandidates: imported.slice(0, 5),
-      message: `${toPersianDigits(imported.length)} رزومه واقعی ثبت شد. هیچ امتیازی به صورت تصادفی تولید نمی‌شود — برای امتیازدهی، هر کارجو را با «ارزیابی هوش مصنوعی» بررسی کنید.`,
-    });
   });
 
   // AI Agent Chat with Gemini Function Calling
