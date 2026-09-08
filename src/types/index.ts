@@ -102,6 +102,8 @@ export interface Candidate {
   weaknesses: string[];
   resumeQuotes: string[];
   criteriaScores?: Record<string, number>; // Criteria title -> score (1-10)
+  criteriaFeedback?: Record<string, string>; // Criteria title -> AI justification text
+  executiveSummary?: string; // AI-generated summary of the evaluation
   inTalentPool: boolean;
   talentPoolNotes?: string;
   scheduledInterview?: string;
