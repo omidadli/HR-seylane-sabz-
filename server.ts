@@ -1,25 +1,6 @@
 /**
  * Enterprise HRMS Express Server (سامانه جامع منابع انسانی کارا)
  * Full API Endpoints for all 8 Modules + Gemini AI Recruitment Agent
- *
- * PRODUCT-AUDIT FIX PASS (see PRODUCT_BUG_REPORT.md):
- * - SEC-01/02/03: every mutating or sensitive endpoint is role-gated against
- *   the SERVER-side session role; employee self-service is scoped to the
- *   session employee; PII (salary, national id, IBAN) is sanitized per role.
- * - LEA-01/02/03: statutory leave-balance engine (26 working days, Art. 64;
- *   9-day carry-over, Art. 66; marriage ≤3 days, Art. 73), server-derived day
- *   counts, over-quota requests rejected, session-employee attribution.
- * - PAY-01..PAY-10: payroll moved to server/payroll-service.ts + statutory
- *   config per Jalali year; DRAFT→FINALIZED→PAID lifecycle with period lock;
- *   proration, real overtime, eidi cap, correct SSO/tax bases.
- * - REC-01..05: honest bulk upload (real files only, no RNG scoring), stage
- *   transition map, HIRED gate (from OFFER + evaluated) which auto-creates the
- *   employee record and onboarding checklist.
- * - AIA-01/02: automation runs require HR role + explicit confirm:true;
- *   LEAVES automation is report-only; voice intents require confirmation.
- * - LOC-01/02/03: all timestamps use the REAL current Jalali date in
- *   Asia/Tehran; no hardcoded ۱۴۰۳/۰۶/۱۵ stamps.
- * - MOD-05: analytics metrics computed from live data.
  */
 
 import express from 'express';
@@ -57,8 +38,6 @@ import {
 } from './src/utils/jalali';
 import { tehranNow } from './server/tehran-time';
 
-// Load .env in development (GEMINI_API_KEY, PORT, ...). Real environment
-// variables injected by the host always take precedence over .env values.
 dotenv.config();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -69,17 +48,12 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
 
-  // -----------------------------------------------------------------
-  // Session & RBAC helpers (audit fixes SEC-01/02/03)
-  // -----------------------------------------------------------------
   const currentRole = (): UserRole => dbStore.currentUserRole;
   const isHR = (): boolean => currentRole() === UserRole.HR_DIRECTOR;
 
-  /** The demo session user (مهندس کیوان سهرابی) bound to an employee record. */
   const sessionEmployee = (): Employee | undefined =>
     dbStore.employees.find(e => e.id === dbStore.sessionEmployeeId);
 
-  /** Department a DEPT_MANAGER is scoped to (derived from the session employee). */
   const managerDepartment = (): string | null => sessionEmployee()?.department || null;
 
   function requireRole(...roles: UserRole[]) {
@@ -97,7 +71,6 @@ async function startServer() {
 
   const HR_AND_MANAGER = [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER];
 
-  /** Fields hidden from non-HR viewers of OTHER people's records. */
   const SENSITIVE_FIELDS = [
     'baseSalaryToman', 'nationalId', 'bankIban', 'birthDateJalali',
     'ssoContributionDays', 'commuteAllowanceToman',
@@ -105,7 +78,7 @@ async function startServer() {
 
   function sanitizeEmployee(emp: Employee, viewerRole: UserRole, viewerEmployeeId?: string): Employee {
     if (viewerRole === UserRole.HR_DIRECTOR) return emp;
-    if (emp.id === viewerEmployeeId) return emp; // own record: full access
+    if (emp.id === viewerEmployeeId) return emp;
     const copy: any = { ...emp };
     for (const f of SENSITIVE_FIELDS) delete copy[f];
     if (viewerRole === UserRole.EMPLOYEE) {
@@ -133,14 +106,9 @@ async function startServer() {
       const dept = managerDepartment();
       return dbStore.employees.filter(e => e.department === dept || e.id === dbStore.sessionEmployeeId);
     }
-    // EMPLOYEE: the whole roster is visible for the org chart, but only as
-    // sanitized cards (no salary / national id / IBAN / contact of others).
     return dbStore.employees;
   }
 
-  // -------------------------------------------------------------
-  // Health & Auth Endpoints
-  // -------------------------------------------------------------
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', time: new Date().toISOString(), tehranDateJalali: tehranNow().jalaliString, platform: 'Kara HRMS Iran' });
   });
@@ -159,9 +127,6 @@ async function startServer() {
     });
   });
 
-  // Demo role switcher is intentionally kept (decision D7): it changes WHO the
-  // session user is, but every endpoint now enforces the resulting role
-  // server-side, so switching to EMPLOYEE genuinely removes HR privileges.
   app.post('/api/auth/switch-role', (req, res) => {
     const { role } = req.body;
     if (Object.values(UserRole).includes(role)) {
@@ -172,14 +137,12 @@ async function startServer() {
     }
   });
 
-  // -------------------------------------------------------------
-  // Module 1: Recruitment & Hiring Endpoints
-  // -------------------------------------------------------------
   app.get('/api/jobs', async (req, res) => {
     try {
-    const jobs = await (dbStore.getJobs ? dbStore.getJobs() : Promise.resolve(dbStore.jobs));
-    res.json(jobs);
-    } catch (e) { res.status(500).json({ error: e.message }); }
+      res.json(dbStore.jobs);
+    } catch (e: any) {
+      res.status(500).json({ error: e?.message || 'Error fetching jobs' });
+    }
   });
 
   app.post('/api/jobs', requireRole(...HR_AND_MANAGER), (req, res) => {
@@ -242,8 +205,6 @@ async function startServer() {
     res.json(job);
   });
 
-  // Deleting a job posting with linked candidates would orphan their pipeline
-  // history (audit SEC-04) — blocked; archive instead.
   app.delete('/api/jobs/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
     const idx = dbStore.jobs.findIndex(j => j.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
@@ -259,7 +220,6 @@ async function startServer() {
     res.json({ success: true, deletedId: req.params.id });
   });
 
-  // Update evaluation criteria, weights, calculation method and instructions for a specific job
   app.put('/api/jobs/:id/criteria', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const {
@@ -312,7 +272,6 @@ async function startServer() {
     });
   });
 
-  // Dynamic AI evaluation of a candidate resume against job criteria
   app.post('/api/jobs/evaluate-candidate', requireRole(...HR_AND_MANAGER), async (req, res) => {
     try {
       const {
@@ -335,8 +294,6 @@ async function startServer() {
       let targetCandidate = candidateId ? dbStore.candidates.find(c => c.id === candidateId) : null;
 
       const evalResumeText = String(resumeText ?? targetCandidate?.resumeText ?? '').trim();
-      // Audit REC-05/D4: an empty resume must NEVER receive a score — there is
-      // nothing to evaluate. Previously it produced a fabricated 7.0.
       if (evalResumeText.length < 20) {
         return res.status(400).json({
           error: 'متن رزومه برای ارزیابی موجود نیست یا بیش از حد کوتاه است',
@@ -367,7 +324,6 @@ async function startServer() {
         initialRejectionThreshold: evalRejection,
       });
 
-      // If requested, update candidate in store
       if (saveCandidateResult && targetCandidate) {
         targetCandidate.overallScore = result.overallScore;
         targetCandidate.category = result.category;
@@ -406,9 +362,6 @@ async function startServer() {
     if (!job) return res.status(400).json({ error: 'موقعیت شغلی انتخاب‌شده وجود ندارد' });
     if (!EMAIL_RE.test(email)) return res.status(400).json({ error: 'رایانامه کارجو نامعتبر است' });
 
-    // Audit REC-05: no fabricated default score (previously every new
-    // candidate was born with 7.5 / INTERVIEW_PRIORITY). A candidate starts
-    // UNSCORED until a real evaluation runs.
     const scoreRaw = Number(req.body.overallScore);
     const hasScore = Number.isFinite(scoreRaw) && scoreRaw >= 0 && scoreRaw <= 10;
 
@@ -439,8 +392,6 @@ async function startServer() {
     res.status(201).json(newCand);
   });
 
-  // Legal stage flow (audit REC-04): no teleporting to HIRED/OFFER, and HIRED
-  // requires a completed evaluation (audit REC-02 flow gap).
   const STAGE_TRANSITIONS: Record<CandidateStage, CandidateStage[]> = {
     [CandidateStage.INITIAL_SCREENING]: [CandidateStage.PHONE_INTERVIEW, CandidateStage.IN_PERSON_INTERVIEW, CandidateStage.REJECTED],
     [CandidateStage.PHONE_INTERVIEW]: [CandidateStage.IN_PERSON_INTERVIEW, CandidateStage.OFFER, CandidateStage.REJECTED],
@@ -476,10 +427,6 @@ async function startServer() {
       });
     }
 
-    // HIRED gate (audit REC-02): a candidate may only be hired from OFFER,
-    // with a completed evaluation and valid contact data — and hiring now
-    // actually creates the employee record + onboarding checklist (the flow
-    // previously dead-ended at HIRED).
     if (stage === CandidateStage.HIRED && cand.stage !== CandidateStage.HIRED) {
       const evaluated =
         typeof cand.overallScore === 'number' &&
@@ -501,7 +448,6 @@ async function startServer() {
       cand.stage = CandidateStage.HIRED;
       const now = tehranNow();
 
-      // --- Auto-create the employee record (onboarding entry point) ---
       const existingCodes = new Set(dbStore.employees.map(e => e.personnelCode));
       let personnelCode = '';
       do {
@@ -511,7 +457,7 @@ async function startServer() {
       const newEmp: Employee = {
         id: `emp-hired-${Date.now()}`,
         personnelCode,
-        nationalId: '', // collected during onboarding (checklist item below)
+        nationalId: '',
         fullName: cand.fullName,
         birthDateJalali: '',
         phone: cand.phone || '',
@@ -519,7 +465,7 @@ async function startServer() {
         department: job.department,
         jobTitle: job.title,
         hireDateJalali: now.jalaliString,
-        baseSalaryToman: 0, // HR must set the contracted salary before payroll
+        baseSalaryToman: 0,
         maritalStatus: 'SINGLE',
         childrenCount: 0,
         bankIban: '',
@@ -540,7 +486,6 @@ async function startServer() {
       };
       dbStore.employees.push(newEmp);
 
-      // --- Auto-create the onboarding checklist ---
       const due = formatJalaliDate(addJalaliDays(now.jalali, 7), true);
       const onboardingTitles = [
         'صدور قرارداد کار و امضای الکترونیکی',
@@ -600,8 +545,6 @@ async function startServer() {
     cand.interviewJalali = interviewJalali;
     cand.interviewType = interviewType;
     cand.interviewNotes = interviewNotes;
-    // Only advance the stage forward — never drag an OFFER/HIRED candidate
-    // back to interview stage (previous code overwrote the stage blindly).
     if (
       cand.stage === CandidateStage.INITIAL_SCREENING ||
       cand.stage === CandidateStage.PHONE_INTERVIEW
@@ -612,33 +555,14 @@ async function startServer() {
     res.json(cand);
   });
 
-  // Bulk resume upload — MERGED: upstream real-resume-screening (client-side
-  // text extraction + real AI scoring via evaluateCandidateWithCriteria) with
-  // the audit remediation guards (REC-01/02/08, SEC-01, LOC-02, D4/D5):
-  // - HR_DIRECTOR only (server-enforced RBAC).
-  // - Only real files whose text was actually extracted client-side are scored;
-  //   unparseable files (e.g. scanned/image PDFs) are skipped WITH a reason —
-  //   never faked, never randomly scored.
-  // - Scores come from Gemini when GEMINI_API_KEY is present; otherwise from
-  //   the deterministic local engine and every result is labeled
-  //   aiAvailable:false (D4) so the UI can show the honest source.
-  // - Per D5 the AI never auto-moves pipeline stages: every imported candidate
-  //   starts at INITIAL_SCREENING; the category (even INITIAL_REJECTION) is an
-  //   advisory badge for human review, not an automatic rejection.
-  // - No fabricated identities: email/phone stay blank until real parsed data.
-  // - Timestamps come from the single Asia/Tehran source (LOC-02).
   const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
     let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
     clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
     clean = clean.replace(/[-_]/g, ' ').trim();
-    // If the filename carries a real, meaningful name, use it — otherwise fall
-    // back to a plain, honest placeholder label (never a fabricated identity).
     if (clean.length >= 3 && !/^\d+$/.test(clean)) return clean;
     return `متقاضی شماره ${index + 1}`;
   };
 
-  // Runs async tasks with a bounded concurrency so a batch of ~200 resumes
-  // doesn't fire 200 simultaneous Gemini requests (rate limits / timeouts).
   async function runWithConcurrencyLimit<T, R>(
     items: T[],
     limit: number,
@@ -672,9 +596,6 @@ async function startServer() {
         });
       }
 
-      // Only resumes whose text was actually extracted client-side can be
-      // scored by the AI. Files that failed extraction (e.g. scanned/image
-      // PDFs with no selectable text) are reported back with a reason, not faked.
       const MIN_TEXT_LENGTH = 30;
       const hasText = (f: { text?: string }) => typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH;
       const validFiles = incomingFiles.filter(hasText);
@@ -698,8 +619,6 @@ async function startServer() {
       const evalPriority = targetJob.interviewPriorityThreshold ?? 7.0;
       const evalRejection = targetJob.initialRejectionThreshold ?? 5.0;
 
-      // Concurrency of 5 keeps ~200 resumes well within Gemini rate limits
-      // while still processing them in parallel batches, not one-by-one.
       const evaluations = await runWithConcurrencyLimit(validFiles, 5, async (file, i) => {
         const fullName = extractCandidateNameFromFilename(file.name, i);
         const result = await evaluateCandidateWithCriteria({
@@ -723,16 +642,12 @@ async function startServer() {
         jobId: targetJob.id,
         jobTitle: targetJob.title,
         fullName,
-        // No fabricated identities (REC-08): contact fields stay blank until
-        // real parsed/entered data exists.
         email: '',
         phone: '',
         resumeFileName: file.name,
         resumeText: file.text as string,
         overallScore: result.overallScore,
         category: result.category,
-        // D5: category is an advisory badge; the stage never auto-moves —
-        // no automatic REJECTED stage from AI/local scoring.
         stage: CandidateStage.INITIAL_SCREENING,
         strengths: result.strengths,
         weaknesses: result.weaknesses,
@@ -740,16 +655,12 @@ async function startServer() {
         criteriaScores: result.criteriaScores,
         criteriaFeedback: result.criteriaFeedback,
         executiveSummary: result.executiveSummary,
-        // Honest labeling (D4): false = deterministic local engine, not live AI.
         aiAvailable: result.aiAvailable !== false,
         inTalentPool: result.category === CandidateCategory.INITIAL_REJECTION && result.overallScore >= 4.5,
         appliedAtJalali: now.jalaliString,
         sourceZip: file.sourceZip,
       }));
 
-      // Store the processed batch. A global cap keeps the in-memory store
-      // bounded; when the cap is hit the oldest bulk-imported candidates are
-      // evicted first.
       const MAX_CANDIDATES = 1000;
       dbStore.candidates.unshift(...newCandidatesBatch);
       const overflow = dbStore.candidates.length - MAX_CANDIDATES;
@@ -788,7 +699,6 @@ async function startServer() {
     }
   });
 
-  // AI Agent Chat with Gemini Function Calling
   app.post('/api/ai/chat', async (req, res) => {
     try {
       const { message, jobId, history } = req.body;
@@ -804,10 +714,6 @@ async function startServer() {
     }
   });
 
-  // -------------------------------------------------------------
-  // Competitor Intelligence Endpoints (HireVue, Eightfold AI, ZipRecruiter)
-  // -------------------------------------------------------------
-  // 1. HireVue: Video Interviews & Rubrics
   app.get('/api/competitor/hirevue/submissions', (req, res) => {
     res.json(dbStore.videoSubmissions || []);
   });
@@ -816,9 +722,6 @@ async function startServer() {
     res.json(dbStore.videoQuestions || []);
   });
 
-  // Video-interview simulator (demo module): creates a simulated submission
-  // record. Scores here are explicitly simulator output (the module is a
-  // HireVue-style demo), stamped with the real current date.
   app.post('/api/competitor/hirevue/evaluate-submission', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateName, jobTitle, brand, simulatedTranscript } = req.body;
     const newSubmission = {
@@ -854,7 +757,6 @@ async function startServer() {
     res.status(201).json(newSubmission);
   });
 
-  // 2. Eightfold AI: Skill Graph & Internal Talent Mobility
   app.get('/api/competitor/eightfold/skills', (req, res) => {
     res.json(dbStore.candidateSkillMatches);
   });
@@ -863,7 +765,6 @@ async function startServer() {
     res.json(dbStore.internalMobilityMatches);
   });
 
-  // 3. ZipRecruiter: Smart Sourcing & Multi-Channel Syndication
   app.get('/api/competitor/ziprecruiter/sourced-candidates', (req, res) => {
     res.json(dbStore.sourcedCandidates);
   });
@@ -931,13 +832,6 @@ async function startServer() {
     res.json(dept);
   });
 
-  // -------------------------------------------------------------
-  // HR Automation Hub (audit fixes AIA-01, LEA-04)
-  // Runs are HR-only and require an explicit confirm:true from a
-  // confirmation dialog. The LEAVES automation is REPORT-ONLY: mass
-  // approval of leave requests bypasses the statutory workflow and balance
-  // checks, so it is no longer offered as an automation.
-  // -------------------------------------------------------------
   app.get('/api/automation/tasks', (req, res) => {
     res.json(dbStore.automationTasks || []);
   });
@@ -963,16 +857,12 @@ async function startServer() {
 
     let executionDetails = 'عملیات با موفقیت انجام شد';
     if (task.category === 'PAYROLL') {
-      // Only DRAFT slips are finalized — PAID/FINALIZED rows are untouched,
-      // and the message reports the REAL count (never a fabricated 1350).
       const drafts = dbStore.payrollSlips.filter(p => p.status === PayrollStatus.DRAFT);
       drafts.forEach(p => { p.status = PayrollStatus.FINALIZED; });
       executionDetails = drafts.length > 0
         ? `${toPersianDigits(drafts.length)} فیش پیش‌نویس دوره‌های موجود نهایی (FINALIZED) شد. فیش‌های پرداخت‌شده دست‌نخورده باقی ماندند.`
         : 'فیش پیش‌نویسی برای نهایی‌سازی وجود ندارد. ابتدا برای دوره موردنظر فیش تولید کنید.';
     } else if (task.category === 'SCREENING') {
-      // Re-categorize from EXISTING real scores against each job's thresholds.
-      // No RNG, no stage changes, no auto-rejections (decision D5).
       let moved = 0;
       for (const cand of dbStore.candidates) {
         if (typeof cand.overallScore !== 'number') continue;
@@ -991,8 +881,6 @@ async function startServer() {
       }
       executionDetails = `دسته‌بندی کارجویان دارای نمره ارزیابی‌شده بازبینی شد (${toPersianDigits(moved)} تغییر دسته). کارجویان بدون نمره واقعی بدون تغییر باقی ماندند و هیچ مرحله استخدامی به صورت خودکار جابه‌جا نشد.`;
     } else if (task.category === 'LEAVES') {
-      // REPORT-ONLY (audit LEA-04): auto-approving pending leave requests
-      // bypasses manager review and statutory balance checks.
       const pending = dbStore.leaveRequests.filter(
         l => l.status === LeaveStatus.PENDING_HR || l.status === LeaveStatus.PENDING_MANAGER
       ).length;
@@ -1007,7 +895,6 @@ async function startServer() {
     });
   });
 
-  // AI Job Description & Job Ad Generator
   app.post('/api/ai/generate-job-ad', requireRole(...HR_AND_MANAGER), async (req, res) => {
     try {
       const result = await generateJobAd(req.body);
@@ -1018,9 +905,6 @@ async function startServer() {
     }
   });
 
-  // AI Voice Assistant Endpoint — intents that mutate data are returned with
-  // requiresConfirmation:true; the client must show a confirmation dialog and
-  // re-call the guarded endpoint (audit fix AIA-01 voice path).
   app.post('/api/ai/voice-assistant', async (req, res) => {
     try {
       const { command } = req.body;
@@ -1032,7 +916,6 @@ async function startServer() {
     }
   });
 
-  // Candidate comparison data (Table & Radar chart)
   app.post('/api/candidates/compare', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateIds } = req.body;
     if (!Array.isArray(candidateIds) || candidateIds.length < 2) {
@@ -1052,8 +935,6 @@ async function startServer() {
     });
 
     const criteriaList = Array.from(allCriteria);
-    // Missing per-criterion scores are emitted as null (chart gap) instead of
-    // 0 — a zero falsely reads as "worst possible score" (audit AIA-04).
     const radarData = criteriaList.map(criterion => {
       const row: any = { criterion };
       candidates.forEach(c => {
@@ -1071,7 +952,6 @@ async function startServer() {
     });
   });
 
-  // Save email draft (never auto-send)
   app.post('/api/candidates/:id/draft-email', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { id } = req.params;
     const { type, subject, body } = req.body;
@@ -1092,9 +972,6 @@ async function startServer() {
     res.json({ success: true, emailDraft: cand.emailDraft });
   });
 
-  // -------------------------------------------------------------
-  // Module 2: Employee Records Endpoints
-  // -------------------------------------------------------------
   app.get('/api/employees', (req, res) => {
     const role = currentRole();
     const list = employeesVisibleToCurrentRole();
@@ -1227,8 +1104,6 @@ async function startServer() {
       return res.status(400).json({ error: 'کد ملی نامعتبر است' });
     }
 
-    // Audit trail: real job-history entries for salary/title/department moves
-    // (the seed histories had fabricated dates and nothing was ever recorded).
     if (salaryChanged || titleChanged || deptChanged) {
       emp.jobHistories = emp.jobHistories || [];
       emp.jobHistories.push({
@@ -1258,8 +1133,6 @@ async function startServer() {
     res.json(emp);
   });
 
-  // Deleting an employee with payroll/attendance/leave history would destroy
-  // statutory records (audit SEC-03) — blocked; use RESIGNED status instead.
   app.delete('/api/employees/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
     const idx = dbStore.employees.findIndex(e => e.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'پرسنل یافت نشد' });
@@ -1279,9 +1152,6 @@ async function startServer() {
     res.json({ success: true, deletedId: id });
   });
 
-  // -------------------------------------------------------------
-  // Module 3: Attendance & Leave Endpoints
-  // -------------------------------------------------------------
   app.get('/api/attendance', (req, res) => {
     const role = currentRole();
     let list = dbStore.attendances;
@@ -1300,8 +1170,6 @@ async function startServer() {
       return res.status(400).json({ error: 'نوع تردد نامعتبر است' });
     }
 
-    // Attribution (audit fix LEA-03/P16): employees can only punch for the
-    // session identity; there is no silent employees[0] fallback anymore.
     const role = currentRole();
     let targetId: string;
     if (role === UserRole.EMPLOYEE || role === UserRole.DEPT_MANAGER) {
@@ -1318,15 +1186,13 @@ async function startServer() {
       return res.status(404).json({ error: 'پرسنل یافت نشد' });
     }
 
-    // Asia/Tehran wall clock (audit fix LOC-03): previously the server's UTC
-    // clock produced check-in times 3.5h off the Iranian shift.
     const now = tehranNow();
     const todayJalali = now.jalaliString;
     const timeStr = now.timeStr;
     const nowMinutes = now.minutes;
 
-    const SHIFT_START_MINUTES = 8 * 60; // 08:00
-    const SHIFT_END_MINUTES = 17 * 60; // 17:00
+    const SHIFT_START_MINUTES = 8 * 60;
+    const SHIFT_END_MINUTES = 17 * 60;
 
     let record = dbStore.attendances.find(a => a.employeeId === emp.id && a.dateJalali === todayJalali);
     if (!record) {
@@ -1344,7 +1210,6 @@ async function startServer() {
 
     if (type === 'CHECK_IN') {
       if (record.checkIn) {
-        // Never silently overwrite an existing check-in.
         return res.json({ ...record, notice: 'ورود امروز قبلاً ثبت شده است' });
       }
       record.checkIn = timeStr;
@@ -1355,7 +1220,6 @@ async function startServer() {
       }
       record.checkOut = timeStr;
       record.overtimeHours = Math.max(0, Math.round(((nowMinutes - SHIFT_END_MINUTES) / 60) * 10) / 10);
-      // Early leave: clocking out before shift end (and not overtime).
       record.earlyLeaveMinutes = record.overtimeHours > 0
         ? 0
         : Math.max(0, SHIFT_END_MINUTES - nowMinutes);
@@ -1365,7 +1229,6 @@ async function startServer() {
     res.json(record);
   });
 
-  // Leave requests — scoped by role (audit fix SEC-01).
   app.get('/api/leave/requests', (req, res) => {
     const role = currentRole();
     let list = dbStore.leaveRequests;
@@ -1378,9 +1241,6 @@ async function startServer() {
     res.json(list);
   });
 
-  // Statutory leave balances (NEW — audit fix LEA-01): derived from Art. 64
-  // (26 working days), pro-rated by hire date, + carry-over ≤9 days (Art. 66),
-  // minus approved AND pending usage. Nothing is stored, so it cannot drift.
   app.get('/api/leave/balances', (req, res) => {
     const role = currentRole();
     const scope = employeesVisibleToCurrentRole();
@@ -1399,8 +1259,6 @@ async function startServer() {
       return res.status(400).json({ error: 'نوع مرخصی نامعتبر است' });
     }
 
-    // Attribution: employees/managers act for themselves; only HR may file on
-    // behalf of another employee (audit fix LEA-03).
     let emp: Employee | undefined;
     if (role === UserRole.HR_DIRECTOR) {
       emp = dbStore.employees.find(e => e.id === employeeId) || sessionEmployee();
@@ -1417,9 +1275,6 @@ async function startServer() {
       return res.status(404).json({ error: 'پرسنل یافت نشد' });
     }
 
-    // Full statutory validation (audit fix LEA-02): negative/999-day ranges,
-    // invalid Jalali dates, end<start and over-quota annual leave are all
-    // rejected; the day count is DERIVED from the dates server-side.
     const validation = validateLeaveRequest(
       emp,
       leaveType as LeaveType,
@@ -1456,8 +1311,6 @@ async function startServer() {
   app.patch('/api/leave/requests/:id/approve', (req, res) => {
     const { id } = req.params;
     const { approved, comment } = req.body;
-    // SECURITY: the acting role is taken from the server-side session state,
-    // never from the request body (clients must not be able to escalate to HR).
     const role = currentRole();
     const reqItem = dbStore.leaveRequests.find(l => l.id === id);
     if (!reqItem) return res.status(404).json({ error: 'درخواست مرخصی یافت نشد' });
@@ -1468,7 +1321,6 @@ async function startServer() {
       return res.status(409).json({ error: 'این درخواست قبلاً تعیین تکلیف شده است' });
     }
 
-    // A department manager may only act on their own department's requests.
     if (role === UserRole.DEPT_MANAGER) {
       const emp = dbStore.employees.find(e => e.id === reqItem.employeeId);
       const dept = managerDepartment();
@@ -1480,9 +1332,6 @@ async function startServer() {
     const becomesApproved = approved === true;
     const quotaTypes = [LeaveType.ANNUAL, LeaveType.HOURLY];
 
-    // Final-approval balance re-check (audit fix LEA-01): between request and
-    // approval other leaves may have consumed the quota — approving must never
-    // push the statutory balance below zero.
     if (becomesApproved && quotaTypes.includes(reqItem.leaveType)) {
       const emp = dbStore.employees.find(e => e.id === reqItem.employeeId);
       if (emp) {
@@ -1514,8 +1363,6 @@ async function startServer() {
         reqItem.hrComment = comment;
         reqItem.status = approved ? LeaveStatus.APPROVED : LeaveStatus.REJECTED;
       } else if (reqItem.status === LeaveStatus.PENDING_MANAGER) {
-        // HR outranks the workflow: acting on a manager-stage request records
-        // both approvals at once instead of skipping the manager silently.
         reqItem.managerApproved = approved;
         reqItem.managerComment = comment ?? 'تایید مستقیم منابع انسانی';
         reqItem.hrApproved = approved;
@@ -1536,15 +1383,10 @@ async function startServer() {
     });
   });
 
-  // -------------------------------------------------------------
-  // Module 4: Payroll Endpoints (audit fixes PAY-01..PAY-12)
-  // -------------------------------------------------------------
   app.get('/api/payroll/slips', (req, res) => {
     const role = currentRole();
     let list = dbStore.payrollSlips;
     if (role === UserRole.EMPLOYEE || role === UserRole.DEPT_MANAGER) {
-      // Self-service: only the session user's own slips. Salary data of other
-      // employees is HR-confidential (audit fix SEC-01).
       list = list.filter(p => p.employeeId === dbStore.sessionEmployeeId);
     } else if (req.query.employeeId) {
       list = list.filter(p => p.employeeId === req.query.employeeId);
@@ -1552,7 +1394,6 @@ async function startServer() {
     res.json(list);
   });
 
-  // Which Jalali years have verified statutory circulars configured.
   app.get('/api/payroll/years', (req, res) => {
     const now = tehranNow();
     res.json({
@@ -1562,7 +1403,6 @@ async function startServer() {
     });
   });
 
-  // Statutory constants per year (transparency for the payroll UI).
   app.get('/api/payroll/statutory/:year', requireRole(...HR_AND_MANAGER), (req, res) => {
     const cfg = getStatutoryConfig(Number(req.params.year));
     if (!cfg) {
@@ -1582,8 +1422,6 @@ async function startServer() {
     if (!Number.isInteger(monthJalali) || monthJalali < 1 || monthJalali > 12) {
       return res.status(400).json({ error: 'ماه شمسی نامعتبر است (۱ تا ۱۲)' });
     }
-    // Audit fix PAY-02: the year must have a verified statutory circular.
-    // Previously ANY year (e.g. 1350) was accepted with stale 1403 constants.
     const cfg = getStatutoryConfig(yearJalali);
     if (!cfg) {
       return res.status(400).json({
@@ -1593,10 +1431,6 @@ async function startServer() {
       });
     }
 
-    // Period lock (audit fix PAY-04/PAY-10):
-    // - PAID slips are immutable — never regenerated.
-    // - FINALIZED slips block regeneration unless force:true (explicit
-    //   re-open by HR).
     const periodSlips = dbStore.payrollSlips.filter(
       p => p.yearJalali === yearJalali && p.monthJalali === monthJalali
     );
@@ -1627,8 +1461,6 @@ async function startServer() {
       dbStore.payrollSlips
     );
 
-    // Merge: replace DRAFT/FINALIZED slips for this (year, month); PAID rows
-    // and every other period are kept. Regenerating is idempotent.
     const paidKeys = new Set(paidSlips.map(sl => `${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`));
     const generatedKeys = new Set(result.slips.map(sl => `${sl.employeeId}-${sl.yearJalali}-${sl.monthJalali}`));
     const keepOtherPeriods = dbStore.payrollSlips.filter(
@@ -1652,7 +1484,6 @@ async function startServer() {
     });
   });
 
-  // DRAFT → FINALIZED for a whole period (or explicit slip ids).
   app.post('/api/payroll/finalize', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
     const { yearJalali, monthJalali, slipIds } = req.body || {};
     let targets = dbStore.payrollSlips;
@@ -1679,7 +1510,6 @@ async function startServer() {
     });
   });
 
-  // FINALIZED → PAID (records the real payment date).
   app.post('/api/payroll/mark-paid', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
     const { yearJalali, monthJalali, slipIds } = req.body || {};
     let targets = dbStore.payrollSlips;
@@ -1715,9 +1545,6 @@ async function startServer() {
     });
   });
 
-  // -------------------------------------------------------------
-  // Module 5: Performance Management Endpoints
-  // -------------------------------------------------------------
   app.get('/api/performance/goals', (req, res) => {
     const role = currentRole();
     let list = dbStore.performanceGoals;
@@ -1768,7 +1595,6 @@ async function startServer() {
     if (!goal) return res.status(404).json({ error: 'هدف یافت نشد' });
 
     const role = currentRole();
-    // Employees may only update the progress of their OWN goals.
     if (role === UserRole.EMPLOYEE && goal.employeeId !== dbStore.sessionEmployeeId) {
       return res.status(403).json({ error: 'فقط اهداف خود کاربر قابل بروزرسانی است' });
     }
@@ -1791,9 +1617,6 @@ async function startServer() {
     res.json(goal);
   });
 
-  // -------------------------------------------------------------
-  // Module 6: Learning & Development Endpoints
-  // -------------------------------------------------------------
   app.get('/api/training/courses', (req, res) => {
     res.json(dbStore.trainingCourses);
   });
@@ -1802,7 +1625,6 @@ async function startServer() {
     res.json(dbStore.skillMatrix);
   });
 
-  // Real course enrollment (audit fix MOD-04: the button was alert()-only).
   app.post('/api/training/enroll', (req, res) => {
     const { courseId, employeeId } = req.body || {};
     const course = dbStore.trainingCourses.find(c => c.id === courseId);
@@ -1847,9 +1669,6 @@ async function startServer() {
     res.json(list);
   });
 
-  // -------------------------------------------------------------
-  // Module 7: Onboarding & Offboarding Endpoints
-  // -------------------------------------------------------------
   app.get('/api/checklists', (req, res) => {
     const role = currentRole();
     let list = dbStore.checklistItems;
@@ -1864,17 +1683,11 @@ async function startServer() {
     const item = dbStore.checklistItems.find(c => c.id === id);
     if (!item) return res.status(404).json({ error: 'آیتم چک‌لیست یافت نشد' });
     item.isCompleted = !item.isCompleted;
-    // Real completion date (audit fix LOC-02): was a hardcoded ۱۴۰۳/۰۶/۱۵.
     item.completedAtJalali = item.isCompleted ? tehranNow().jalaliString : undefined;
     dbStore.markDirty();
     res.json(item);
   });
 
-  // -------------------------------------------------------------
-  // Module 8: Reporting & Analytics Dashboard Endpoints
-  // Computed from LIVE data (audit fix MOD-05) — previously a static seed
-  // object unrelated to anything happening in the system.
-  // -------------------------------------------------------------
   app.get('/api/analytics/metrics', (req, res) => {
     const active = dbStore.employees.filter(e => e.status === 'ACTIVE');
     const resigned = dbStore.employees.filter(e => e.status === 'RESIGNED');
@@ -1883,7 +1696,6 @@ async function startServer() {
       l => l.status === LeaveStatus.PENDING_HR || l.status === LeaveStatus.PENDING_MANAGER
     );
 
-    // Latest generated payroll period, if any.
     const periods = new Map<string, number>();
     for (const sl of dbStore.payrollSlips) {
       const key = `${sl.yearJalali}-${sl.monthJalali}`;
@@ -1896,8 +1708,6 @@ async function startServer() {
     const hiredCandidates = dbStore.candidates.filter(c => c.stage === CandidateStage.HIRED).length;
     const totalCandidates = dbStore.candidates.length;
 
-    // Company-wide financial aggregates are HR-confidential (audit fix SEC-02):
-    // non-HR roles receive nulls and the UI hides/locks those cards.
     const isHRViewer = isHR();
     res.json({
       turnoverRatePct: dbStore.employees.length > 0
@@ -1909,7 +1719,6 @@ async function startServer() {
       openPositionsCount: openPositions.length,
       pendingLeavesCount: pendingLeaves.length,
       monthlyPayrollTotalToman: isHRViewer ? lastPeriodTotal : null,
-      // Extra live indicators for the executive dashboard:
       hiredCandidatesCount: hiredCandidates,
       totalCandidatesCount: totalCandidates,
       totalEmployeesEver: dbStore.employees.length,
@@ -1918,10 +1727,6 @@ async function startServer() {
     });
   });
 
-  // -------------------------------------------------------------
-  // API 404 + Central Error Handler
-  // -------------------------------------------------------------
-  // Unknown /api/* routes get JSON (never the SPA shell or a stack trace).
   app.use('/api', (req, res) => {
     res.status(404).json({ error: 'مسیر API یافت نشد' });
   });
@@ -1932,9 +1737,6 @@ async function startServer() {
     res.status(500).json({ error: 'خطای داخلی سرور' });
   });
 
-  // -------------------------------------------------------------
-  // Vite Middleware / Static Files
-  // -------------------------------------------------------------
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },

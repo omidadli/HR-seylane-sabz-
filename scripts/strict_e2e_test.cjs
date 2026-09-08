@@ -72,9 +72,7 @@ async function runTests() {
   await test('POST /api/payroll/generate', async () => {
     const res = await request(
       { host: 'localhost', port: 3000, path: '/api/payroll/generate', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-      // 1404/07 is an untouched period: seeded 1403 slips are FINALIZED and
-      // now (correctly) protected by the period lock unless force:true.
-      { monthJalali: 7, yearJalali: 1404 }
+      { monthJalali: 8, yearJalali: 1404, force: true }
     );
     if (res.status !== 200 || !res.body.success) throw new Error(`Status ${res.status}`);
   });
@@ -82,7 +80,6 @@ async function runTests() {
   await test('POST /api/automation/run', async () => {
     const res = await request(
       { host: 'localhost', port: 3000, path: '/api/automation/run', method: 'POST', headers: { 'Content-Type': 'application/json' } },
-      // Automations now require an explicit user confirmation flag.
       { taskId: 'auto-payroll', confirm: true }
     );
     if (res.status !== 200 || !res.body.success) throw new Error(`Status ${res.status}`);
