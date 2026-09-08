@@ -1,5 +1,7 @@
 # Render Blueprint (Infrastructure as Code)
-# Configured for Node.js Web Service on Render with Supabase PostgreSQL Database
+# Node.js Web Service on Render. The app's data layer is an in-memory store
+# with a JSON-file snapshot (server/store.ts) — there is no live database
+# dependency, so no Postgres instance or DATABASE_URL is required to deploy.
 
 services:
   - type: web
@@ -11,7 +13,7 @@ services:
     repo: https://github.com/omidadli/HR-seylane-sabz-
     branch: main
     autoDeploy: true
-    buildCommand: npm install && npx prisma generate && npm run build
+    buildCommand: npm install && npm run build
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
