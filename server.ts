@@ -273,133 +273,151 @@ async function startServer() {
   };
   const latinName = (fa: string, fallback: string): string => faNameLatin[fa] || fallback;
 
-  // Bulk resume upload processing (simulates 200+ resumes real-time processing)
-  app.post('/api/candidates/bulk-upload', (req, res) => {
-    const { filesCount, jobId, files, mode } = req.body;
-    const targetJob = dbStore.jobs.find(j => j.id === jobId) || dbStore.jobs[0];
-    const uploadedFiles: Array<{ name: string; size?: number; text?: string; sourceZip?: string }> =
-      Array.isArray(files) && files.length > 0 ? files : [];
-
-    const totalFiles =
-      uploadedFiles.length > 0 && (mode === 'exact' || !filesCount)
-        ? uploadedFiles.length
-        : Math.max(uploadedFiles.length || 1, Math.min(filesCount || (uploadedFiles.length ? uploadedFiles.length : 200), 250));
-
-    const iranianFirstNames = ['سینا', 'الناز', 'پویان', 'بهار', 'حامد', 'رکسانا', 'فرزاد', 'سوگند', 'مهراد', 'یاسمین', 'آرش', 'ترانه', 'نوید', 'مینا', 'سارا', 'کیوان', 'نیما', 'پریسا'];
-    const iranianLastNames = ['کاظمی', 'رحیمی', 'طاهری', 'غفاری', 'صادقی', 'حسینی', 'میرزایی', 'کریمی', 'افشار', 'نوری', 'باقری', 'شریفی', 'یزدانی', 'موسوی'];
-
-    const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
-      // Clean extensions and common prefixes
-      let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
-      clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
-      clean = clean.replace(/[\-_]/g, ' ').trim();
-      // If contains at least 3 characters and is meaningful, use it
-      if (clean.length >= 3 && !/^\d+$/.test(clean)) {
-        return clean;
-      }
-      const fn = iranianFirstNames[(index + Math.floor(Math.random() * 5)) % iranianFirstNames.length];
-      const ln = iranianLastNames[(index + Math.floor(Math.random() * 5)) % iranianLastNames.length];
-      return `${fn} ${ln}`;
-    };
-
-    const newCandidatesBatch = [];
-    for (let i = 0; i < totalFiles; i++) {
-      const isRealFile = i < uploadedFiles.length;
-      const uploadedFile = isRealFile ? uploadedFiles[i] : null;
-
-      let fullName: string;
-      let resumeFileName: string;
-      let resumeText: string;
-
-      if (uploadedFile) {
-        resumeFileName = uploadedFile.name;
-        fullName = extractCandidateNameFromFilename(uploadedFile.name, i);
-        resumeText = uploadedFile.text || `رزومه استخراج‌شده از سامانه جذب هلدینگ سیلانه سبز. متقاضی موقعیت ${targetJob.title} در دپارتمان ${targetJob.department}. سوابق مرتبط و تحصیلات تخصصی.`;
-      } else {
-        const fn = iranianFirstNames[Math.floor(Math.random() * iranianFirstNames.length)];
-        const ln = iranianLastNames[Math.floor(Math.random() * iranianLastNames.length)];
-        fullName = `${fn} ${ln}`;
-        resumeFileName = `Resume_${fullName.replace(/\s+/g, '_')}.pdf`;
-        resumeText = `فارغ‌التحصیل رشته مهندسی، سابقه کار مرتبط در صنایع سلولزی و FMCG، آشنا با فرایندهای سازمان.`;
-      }
-
-      const score = +(4 + Math.random() * 5.8).toFixed(1);
-
-      let category = CandidateCategory.NEEDS_REVIEW;
-      if (score >= 7.0) category = CandidateCategory.INTERVIEW_PRIORITY;
-      else if (score < 5.0) category = CandidateCategory.INITIAL_REJECTION;
-
-      // Extract criteria scores matching the target job
-      const criteriaScores: Record<string, number> = {};
-      if (targetJob.criteria && targetJob.criteria.length > 0) {
-        targetJob.criteria.forEach((crit) => {
-          criteriaScores[crit.title] = Math.min(10, +(score * (0.85 + Math.random() * 0.3)).toFixed(1));
-        });
-      } else {
-        criteriaScores['شایستگی تخصصی'] = Math.min(10, +(score * 0.95).toFixed(1));
-        criteriaScores['سابقه کار مرتبط'] = Math.min(10, +(score * 0.9).toFixed(1));
-        criteriaScores['کار تیمی و انگیزه'] = Math.min(10, +(score * 1.0).toFixed(1));
-      }
-
-      const fnPart = fullName.split(' ')[0] || 'applicant';
-      const lnPart = fullName.split(' ')[1] || 'resume';
-
-      const cand = {
-        id: `cand-bulk-${Date.now()}-${i}`,
-        jobId: targetJob.id,
-        jobTitle: targetJob.title,
-        fullName,
-        email: `${latinName(fnPart, 'applicant')}.${latinName(lnPart, 'seilaneh')}.${Date.now().toString(36)}${i}@example.com`,
-        phone: `0912${Math.floor(1000000 + Math.random() * 9000000)}`,
-        resumeFileName,
-        resumeText,
-        overallScore: score,
-        category,
-        stage: category === CandidateCategory.INTERVIEW_PRIORITY ? CandidateStage.INITIAL_SCREENING : (category === CandidateCategory.INITIAL_REJECTION ? CandidateStage.REJECTED : CandidateStage.INITIAL_SCREENING),
-        strengths: [
-          `تطابق با الزامات موقعیت ${targetJob.title} با امتیاز شایستگی ${score}`,
-          `تسلط بر مهارت‌های موردنیاز دپارتمان ${targetJob.department}`,
-        ],
-        weaknesses: [
-          score < 7 ? 'نیاز به سنجش سطح عملکردی در مصاحبه تلفنی اولیه' : 'نیاز به ارزیابی نهایی در جلسه حضوری با سرپرست واحد',
-        ],
-        resumeQuotes: [
-          uploadedFile?.sourceZip ? `«مستخرج از آرشیو ${uploadedFile.sourceZip}»` : '«سابقه فعالیت در پروژه‌های تیمی مرتبط با FMCG و استانداردهای کیفی»',
-        ],
-        criteriaScores,
-        inTalentPool: category === CandidateCategory.INITIAL_REJECTION && score >= 4.5,
-        appliedAtJalali: '۱۴۰۳/۰۶/۱۵',
-      };
-      newCandidatesBatch.push(cand);
+  const extractCandidateNameFromFilename = (fileName: string, index: number): string => {
+    // Clean extensions and common prefixes
+    let clean = fileName.replace(/\.(pdf|docx?|txt|rtf|zip)$/i, '');
+    clean = clean.replace(/^(resume|cv|رزومه|سابقه|bio)[\s_\-]*/i, '');
+    clean = clean.replace(/[\-_]/g, ' ').trim();
+    // If the filename carries a real, meaningful name, use it — otherwise fall
+    // back to a plain, honest placeholder label (never a fabricated identity).
+    if (clean.length >= 3 && !/^\d+$/.test(clean)) {
+      return clean;
     }
+    return `متقاضی شماره ${index + 1}`;
+  };
 
-    // Store the whole processed batch so the pipeline matches the reported
-    // stats. A global cap keeps the in-memory store bounded; when the cap is
-    // hit the oldest bulk-imported candidates are evicted first.
-    const MAX_CANDIDATES = 1000;
-    dbStore.candidates.unshift(...newCandidatesBatch);
-    const overflow = dbStore.candidates.length - MAX_CANDIDATES;
-    if (overflow > 0) {
-      const bulkIdx: number[] = [];
-      dbStore.candidates.forEach((c, idx) => {
-        if (c.id.startsWith('cand-bulk-')) bulkIdx.push(idx);
-      });
-      // Evict oldest bulk imports (they sit at the end of the array).
-      bulkIdx.sort((a, b) => b - a);
-      for (const idx of bulkIdx.slice(0, overflow)) {
-        dbStore.candidates.splice(idx, 1);
+  // Runs async tasks with a bounded concurrency so a batch of ~200 resumes
+  // doesn't fire 200 simultaneous Gemini requests (rate limits / timeouts).
+  async function runWithConcurrencyLimit<T, R>(
+    items: T[],
+    limit: number,
+    worker: (item: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    const results: R[] = new Array(items.length);
+    let cursor = 0;
+    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (cursor < items.length) {
+        const current = cursor++;
+        results[current] = await worker(items[current], current);
       }
-    }
-    targetJob.applicationsCount += totalFiles;
-
-    res.json({
-      success: true,
-      processedCount: totalFiles,
-      interviewPriorityCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INTERVIEW_PRIORITY).length,
-      needsReviewCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.NEEDS_REVIEW).length,
-      initialRejectionCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INITIAL_REJECTION).length,
-      sampleCandidates: newCandidatesBatch.slice(0, 5),
     });
+    await Promise.all(runners);
+    return results;
+  }
+
+  // Real AI-powered bulk resume screening. Every candidate is scored by
+  // actually sending their extracted resume text to Gemini against the
+  // job's evaluation criteria — no random/simulated scores.
+  app.post('/api/candidates/bulk-upload', async (req, res) => {
+    try {
+      const { jobId, files } = req.body;
+      const targetJob = dbStore.jobs.find(j => j.id === jobId) || dbStore.jobs[0];
+
+      const incomingFiles: Array<{ name: string; size?: number; text?: string; sourceZip?: string }> =
+        Array.isArray(files) ? files : [];
+
+      // Only resumes whose text was actually extracted client-side can be
+      // scored by the AI. Files that failed extraction (e.g. scanned/image
+      // PDFs with no selectable text) are reported back, not faked.
+      const MIN_TEXT_LENGTH = 30;
+      const validFiles = incomingFiles.filter(f => typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH);
+      const skippedFiles = incomingFiles.filter(f => !(typeof f.text === 'string' && f.text.trim().length >= MIN_TEXT_LENGTH));
+
+      if (validFiles.length === 0) {
+        return res.status(400).json({
+          error: 'هیچ متن قابل‌استخراجی از رزومه‌های ارسالی یافت نشد. لطفاً از فایل‌های PDF/Word متنی (نه اسکن تصویری) استفاده کنید.',
+          skippedCount: skippedFiles.length,
+        });
+      }
+
+      const evalCriteria = targetJob.criteria || [];
+      const evalScoringMethod = targetJob.scoringMethod || 'WEIGHTED_AVG';
+      const evalAiRigor = targetJob.aiRigor || 'BALANCED';
+      const evalInstructions = targetJob.evaluationInstructions;
+      const evalPriority = targetJob.interviewPriorityThreshold ?? 7.0;
+      const evalRejection = targetJob.initialRejectionThreshold ?? 5.0;
+
+      // Concurrency of 5 keeps ~200 resumes well within Gemini rate limits
+      // while still processing them in parallel batches, not one-by-one.
+      const evaluations = await runWithConcurrencyLimit(validFiles, 5, async (file, i) => {
+        const fullName = extractCandidateNameFromFilename(file.name, i);
+        const result = await evaluateCandidateWithCriteria({
+          jobTitle: targetJob.title,
+          department: targetJob.department,
+          candidateName: fullName,
+          resumeText: file.text as string,
+          criteria: evalCriteria,
+          scoringMethod: evalScoringMethod,
+          aiRigor: evalAiRigor,
+          evaluationInstructions: evalInstructions,
+          interviewPriorityThreshold: evalPriority,
+          initialRejectionThreshold: evalRejection,
+        });
+        return { file, fullName, result };
+      });
+
+      const nowJalali = toPersianDigits(new Date().toLocaleDateString('fa-IR'));
+
+      const newCandidatesBatch = evaluations.map(({ file, fullName, result }, i) => {
+        const fnPart = fullName.split(' ')[0] || 'applicant';
+        const lnPart = fullName.split(' ')[1] || 'resume';
+        return {
+          id: `cand-bulk-${Date.now()}-${i}`,
+          jobId: targetJob.id,
+          jobTitle: targetJob.title,
+          fullName,
+          email: `${latinName(fnPart, 'applicant')}.${latinName(lnPart, 'seilaneh')}.${Date.now().toString(36)}${i}@example.com`,
+          phone: '', // Real contact info isn't reliably present/parsed yet; left blank rather than fabricated.
+          resumeFileName: file.name,
+          resumeText: file.text as string,
+          overallScore: result.overallScore,
+          category: result.category,
+          stage: result.category === CandidateCategory.INTERVIEW_PRIORITY
+            ? CandidateStage.INITIAL_SCREENING
+            : (result.category === CandidateCategory.INITIAL_REJECTION ? CandidateStage.REJECTED : CandidateStage.INITIAL_SCREENING),
+          strengths: result.strengths,
+          weaknesses: result.weaknesses,
+          resumeQuotes: result.resumeQuotes,
+          criteriaScores: result.criteriaScores,
+          criteriaFeedback: result.criteriaFeedback,
+          executiveSummary: result.executiveSummary,
+          inTalentPool: result.category === CandidateCategory.INITIAL_REJECTION && result.overallScore >= 4.5,
+          appliedAtJalali: nowJalali,
+        };
+      });
+
+      // Store the processed batch. A global cap keeps the in-memory store
+      // bounded; when the cap is hit the oldest bulk-imported candidates are
+      // evicted first.
+      const MAX_CANDIDATES = 1000;
+      dbStore.candidates.unshift(...newCandidatesBatch);
+      const overflow = dbStore.candidates.length - MAX_CANDIDATES;
+      if (overflow > 0) {
+        const bulkIdx: number[] = [];
+        dbStore.candidates.forEach((c, idx) => {
+          if (c.id.startsWith('cand-bulk-')) bulkIdx.push(idx);
+        });
+        bulkIdx.sort((a, b) => b - a);
+        for (const idx of bulkIdx.slice(0, overflow)) {
+          dbStore.candidates.splice(idx, 1);
+        }
+      }
+      targetJob.applicationsCount += newCandidatesBatch.length;
+
+      res.json({
+        success: true,
+        processedCount: newCandidatesBatch.length,
+        skippedCount: skippedFiles.length,
+        skippedFiles: skippedFiles.map(f => f.name),
+        interviewPriorityCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INTERVIEW_PRIORITY).length,
+        needsReviewCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.NEEDS_REVIEW).length,
+        initialRejectionCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INITIAL_REJECTION).length,
+        sampleCandidates: newCandidatesBatch.slice(0, 5),
+      });
+    } catch (err: any) {
+      console.error('Bulk resume screening error:', err);
+      res.status(500).json({ error: 'خطا در پردازش و ارزیابی هوشمند رزومه‌ها', details: err?.message });
+    }
   });
 
   // AI Agent Chat with Gemini Function Calling
