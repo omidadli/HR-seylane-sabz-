@@ -38,6 +38,7 @@ import {
   JobSyndicationChannel,
   KnockoutQuestion,
 } from '../src/types';
+import { PrismaClient } from '@prisma/client';
 
 export class HRMSStore {
   public currentUserRole: UserRole = UserRole.HR_DIRECTOR;
@@ -48,6 +49,15 @@ export class HRMSStore {
    * this id instead of the old "employees[0] fallback".
    */
   public sessionEmployeeId: string = 'emp-1';
+  public prisma = new PrismaClient();
+
+  // Module 1: Jobs (Prisma migration start)
+  async getJobs() {
+    return this.prisma.jobPosting.findMany({ include: { criteria: true } });
+  }
+  async getJobById(id: string) {
+    return this.prisma.jobPosting.findUnique({ where: { id }, include: { criteria: true } });
+  }
 
   public jobs: JobPosting[] = [
     {

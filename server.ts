@@ -175,8 +175,11 @@ async function startServer() {
   // -------------------------------------------------------------
   // Module 1: Recruitment & Hiring Endpoints
   // -------------------------------------------------------------
-  app.get('/api/jobs', (req, res) => {
-    res.json(dbStore.jobs);
+  app.get('/api/jobs', async (req, res) => {
+    try {
+    const jobs = await (dbStore.getJobs ? dbStore.getJobs() : Promise.resolve(dbStore.jobs));
+    res.json(jobs);
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   app.post('/api/jobs', requireRole(...HR_AND_MANAGER), (req, res) => {
