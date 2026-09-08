@@ -219,7 +219,7 @@ async function startServer() {
     res.status(201).json(newJob);
   });
 
-  app.patch('/api/jobs/:id', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.patch('/api/jobs/:id', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const job = dbStore.jobs.find(j => j.id === req.params.id);
     if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
     const { title, department, employmentType, location, description, requirements, status } = req.body;

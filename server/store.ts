@@ -58,6 +58,15 @@ export class HRMSStore {
   async getJobById(id: string) {
     return this.prisma.jobPosting.findUnique({ where: { id }, include: { criteria: true } });
   }
+  async createJob(data: any) {
+    return this.prisma.jobPosting.create({ data, include: { criteria: true } });
+  }
+  async updateJob(id: string, data: any) {
+    return this.prisma.jobPosting.update({ where: { id }, data, include: { criteria: true } });
+  }
+  async deleteJob(id: string) {
+    return this.prisma.jobPosting.delete({ where: { id } });
+  }
 
   public jobs: JobPosting[] = [
     {
