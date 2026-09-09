@@ -25,6 +25,7 @@ import { JobPosting, JobCriteria, ScoringMethod, AIRigor, CandidateCategory, Can
 import { toPersianDigits } from '../../utils/jalali';
 import { Skeleton, SkeletonCard } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
+import { showToast } from '../common/Toast';
 
 interface EvaluationCriteriaManagerProps {
   jobs: JobPosting[];
@@ -282,7 +283,7 @@ export const EvaluationCriteriaManager: React.FC<EvaluationCriteriaManagerProps>
 
   const handleRemoveCriterion = (index: number) => {
     if (criteriaList.length <= 1) {
-      alert('حداقل یک شاخصه ارزیابی الزامی است.');
+      showToast('حداقل یک شاخصه ارزیابی الزامی است.', 'warning');
       return;
     }
     setCriteriaList((prev) => prev.filter((_, i) => i !== index));

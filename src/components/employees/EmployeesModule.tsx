@@ -41,8 +41,8 @@ interface EmployeesModuleProps {
   employees: Employee[];
   currentRole?: UserRole;
   onCreateEmployee: (newEmp: Partial<Employee>) => void;
-  onUpdateEmployee?: (id: string, patch: Partial<Employee>) => Promise<void> | void;
-  onDeleteEmployee?: (id: string) => Promise<void> | void;
+  onUpdateEmployee?: (id: string, patch: Partial<Employee>) => Promise<Employee>;
+  onDeleteEmployee?: (id: string) => Promise<void>;
 }
 
 export function highlightMatch(text: string | undefined | null, query: string): React.ReactNode {
@@ -74,6 +74,8 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
   employees,
   currentRole = UserRole.HR_DIRECTOR,
   onCreateEmployee,
+  onUpdateEmployee,
+  onDeleteEmployee,
 }) => {
   // Sync local employees with props
   const [localEmployees, setLocalEmployees] = useState<Employee[]>(employees);
@@ -219,27 +221,18 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
   // Handler for saving employee (Add or Edit)
   const handleSaveEmployee = async (formData: Partial<Employee>) => {
     if (editingEmployee) {
-      // PATCH /api/employees/:id
-      const res = await fetch(`/api/employees/${editingEmployee.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'خطا در بروزرسانی پرونده پرسنل');
+      // PATCH /api/employees/:id — routed through App so central state stays
+      // in sync with every other module (audit F1).
+      if (onUpdateEmployee) {
+        const updated = await onUpdateEmployee(editingEmployee.id, formData);
+        if (selectedEmployee?.id === updated.id) {
+          setSelectedEmployee(updated);
+        }
+        setToast({
+          type: 'success',
+          message: `پرونده پرسنلی «${updated.fullName}» با موفقیت بروزرسانی گردید.`,
+        });
       }
-
-      const updated: Employee = await res.json();
-      setLocalEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
-      if (selectedEmployee?.id === updated.id) {
-        setSelectedEmployee(updated);
-      }
-      setToast({
-        type: 'success',
-        message: `پرونده پرسنلی «${updated.fullName}» با موفقیت بروزرسانی گردید.`,
-      });
     } else {
       // Call prop onCreateEmployee
       await onCreateEmployee(formData);
@@ -261,33 +254,10 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
     if (!confirmed) return;
 
     try {
-      const res = await fetch(`/api/employees/${emp.id}`, {
-        method: 'DELETE',
-      });
-
-      if (res.status === 409) {
-        const data = await res.json();
-        setDeleteBlockedInfo({
-          employee: emp,
-          message:
-            data.error ||
-            'پرونده پرسنلی دارای سوابق حقوقی/تردد/مرخصی است و طبق الزامات قانونی قابل حذف نیست.',
-          suggestion:
-            data.suggestion ||
-            'برای پایان همکاری، وضعیت پرسنل را به «قطع همکاری» تغییر دهید.',
-        });
-        setToast({
-          type: 'error',
-          message: 'امکان حذف دائم وجود ندارد؛ پرونده دارای سوابق قانونی است.',
-        });
-        return;
+      // DELETE /api/employees/:id — routed through App for central-state sync.
+      if (onDeleteEmployee) {
+        await onDeleteEmployee(emp.id);
       }
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'خطا در حذف همکار');
-      }
-
       setLocalEmployees((prev) => prev.filter((e) => e.id !== emp.id));
       if (selectedEmployee?.id === emp.id) {
         setIsDrawerOpen(false);
@@ -300,6 +270,22 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
       });
     } catch (err: any) {
       console.error(err);
+      if (err?.status === 409) {
+        setDeleteBlockedInfo({
+          employee: emp,
+          message:
+            err.data?.error ||
+            'پرونده پرسنلی دارای سوابق حقوقی/تردد/مرخصی است و طبق الزامات قانونی قابل حذف نیست.',
+          suggestion:
+            err.data?.suggestion ||
+            'برای پایان همکاری، وضعیت پرسنل را به «قطع همکاری» تغییر دهید.',
+        });
+        setToast({
+          type: 'error',
+          message: 'امکان حذف دائم وجود ندارد؛ پرونده دارای سوابق قانونی است.',
+        });
+        return;
+      }
       setToast({
         type: 'error',
         message: err.message || 'خطا در ارتباط با سرور جهت حذف پرسنل',
@@ -310,18 +296,9 @@ export const EmployeesModule: React.FC<EmployeesModuleProps> = ({
   // Quick action: change status to RESIGNED when 409 occurs
   const handleMarkAsResigned = async (emp: Employee) => {
     try {
-      const res = await fetch(`/api/employees/${emp.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'RESIGNED' }),
-      });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'خطا در تغییر وضعیت پرسنل');
-      }
-
-      const updated = await res.json();
+      const updated = onUpdateEmployee
+        ? await onUpdateEmployee(emp.id, { status: 'RESIGNED' })
+        : emp;
       setLocalEmployees((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
       if (selectedEmployee?.id === updated.id) {
         setSelectedEmployee(updated);

@@ -396,6 +396,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       if (RECRUITMENT_COMMANDS.has(item.id)) return canAccessModule(currentRole, 'recruitment');
       if (item.id === 'nav-payroll') return canAccessModule(currentRole, 'payroll');
       if (item.id === 'nav-analytics') return canAccessModule(currentRole, 'analytics');
+      if (item.id === 'action-ai-governance' || item.id === 'nav-ai-governance') return canAccessModule(currentRole, 'ai-governance');
       return true;
     });
   }, [jobs, candidates, currentRole, onClose, onSelectModule, onOpenVoiceAssistant, onOpenJobGenerator, onSelectJob]);

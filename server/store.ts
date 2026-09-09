@@ -38,6 +38,7 @@ import {
   JobSyndicationChannel,
   KnockoutQuestion,
   JobHistoryItem,
+  AIBotGovernanceConfig,
 } from '../src/types';
 import { isDatabaseConfigured } from './db';
 import {
@@ -1027,6 +1028,89 @@ export class HRMSStore {
   ];
 
   // -------------------------------------------------------------
+  // AI Bot Governance (audit B5): config backing the
+  // /api/ai-governance/* endpoints. This is a template configuration, not
+  // fabricated analytics — the module edits and persists it.
+  // -------------------------------------------------------------
+  public aiGovernanceConfig: AIBotGovernanceConfig = {
+    botName: 'دستیار جذب سیلانه سبز',
+    botRole: 'دستیار ارشد جذب و ارزیابی شایستگی هلدینگ سیلانه سبز',
+    modelName: 'gemini-2.5-flash',
+    systemPromptTemplate:
+      'شما دستیار هوشمند و ارشد جذب و استخدام در هلدینگ سیلانه سبز هستید. همواره فارسی، رسمی و مستند پاسخ دهید و هرگز اقدام برگشت‌ناپذیری را بدون تأیید مدیر انجام ندهید.',
+    strictnessLevel: 'BALANCED',
+    culture: {
+      companyVision: 'ارتقای استانداردهای سلامت، بهداشت و زیبایی در منطقه با برندهای دافی، کامان، میس‌ویک و کاپوت.',
+      holdingBrands: ['دافی', 'کامان', 'میس‌ویک', 'کاپوت', 'زنون'],
+      coreValues: [
+        { id: 'cv-1', title: 'صداقت و شفافیت', description: 'گزارش دقیق و بدون اغراق در تمام فرایندها', weight: 30 },
+        { id: 'cv-2', title: 'مشتری‌مداری', description: 'سلامت و رضایت مصرف‌کننده در اولویت نخست', weight: 30 },
+        { id: 'cv-3', title: 'نوآوری و بهبود مستمر', description: 'یادگیری مداوم و ارتقای فرایندها', weight: 25 },
+        { id: 'cv-4', title: 'کار تیمی', description: 'همکاری بین‌دپارتمانی و احترام متقابل', weight: 15 },
+      ],
+      companyCultureDoc: 'سند فرهنگ سازمانی هلدینگ سیلانه سبز — نسخه‌ی پیش‌فرض قابل ویرایش در ماژول حاکمیت.',
+      unacceptableBehaviors: ['سوءاستفاده از اطلاعات شخصی', 'عدم رعایت ایمنی خط تولید', 'تبعیض در فرایند جذب'],
+      toneOfVoice: 'PROFESSIONAL',
+      culturalFitWeightPct: 20,
+    },
+    departmentPipelines: [
+      {
+        id: 'pipe-rd',
+        departmentId: 'dept-rd',
+        departmentName: 'لابراتوارهای تحقیق، توسعه و فرمولاسیون (R&D)',
+        industrySector: 'صنایع آرایشی و بهداشتی / دارویی (FMCG)',
+        description: 'ارزیابی شایستگی‌های فرمولاسیون، GMP و تسلط آزمایشگاهی.',
+        steps: [
+          { id: 'st-1', stepNumber: 1, name: 'غربالگری اولیه سوابق', description: 'بررسی تطابق پایه رزومه', evaluationType: 'KNOCKOUT', isAutomated: true, failAction: 'REJECT' },
+          { id: 'st-2', stepNumber: 2, name: 'ارزیابی تخصصی فرمولاسیون', description: 'سنجش تسلط فنی', evaluationType: 'SKILL_MATCH', isAutomated: true, failAction: 'FLAG_FOR_MANAGER' },
+          { id: 'st-3', stepNumber: 3, name: 'تناسب فرهنگی و سازمانی', description: 'سنجش هم‌راستایی ارزشی', evaluationType: 'CULTURE_FIT', isAutomated: true, failAction: 'DOWNGRADE_SCORE' },
+          { id: 'st-4', stepNumber: 4, name: 'تصمیم نهایی', description: 'جمع‌بندی و پیشنهاد مرحله', evaluationType: 'FINAL_DECISION', isAutomated: false, failAction: 'FLAG_FOR_MANAGER' },
+        ],
+        criteriaWeights: [
+          { id: 'cw-1', name: 'تسلط بر فرمولاسیون محصولات پوست و مو', weight: 40, targetDescription: 'تجربه فرمولاسیون کرم، ضدآفتاب و شوینده', thresholdScore: 6, isMandatory: true },
+          { id: 'cw-2', name: 'آشنایی با استانداردهای GMP و IFDA', weight: 30, targetDescription: 'تسلط بر مستندسازی GLP/GMP', thresholdScore: 5 },
+          { id: 'cw-3', name: 'روحیه کار تیمی و رعایت ایمنی', weight: 30, targetDescription: 'همکاری آزمایشگاهی و ایمنی', thresholdScore: 5 },
+        ],
+        vetoRules: ['فقدان کامل سابقه فرمولاسیون', 'سابقه تخلف در رعایت ایمنی'],
+        minimumPassingScore: 6,
+        airigor: 'BALANCED',
+        scoringMethod: 'WEIGHTED_AVG',
+        customPromptInstructions: 'بر شواهد عینی رزومه تأکید کن و از حدس خودداری کن.',
+      },
+      {
+        id: 'pipe-mfg',
+        departmentId: 'dept-mfg',
+        departmentName: 'کارخانجات و صنایع تولیدی اشتهارد و سیمین‌دشت',
+        industrySector: 'تولید صنعتی سلولزی و آرایشی',
+        description: 'ارزیابی تجربه سرپرستی خط تولید، GMP و مدیریت شیفت.',
+        steps: [
+          { id: 'st-1', stepNumber: 1, name: 'غربالگری اولیه', description: 'بررسی سابقه تولیدی', evaluationType: 'KNOCKOUT', isAutomated: true, failAction: 'REJECT' },
+          { id: 'st-2', stepNumber: 2, name: 'ارزیابی سرپرستی خط', description: 'تجربه مدیریت خط و شیفت', evaluationType: 'EXPERIENCE_VERIFY', isAutomated: true, failAction: 'FLAG_FOR_MANAGER' },
+          { id: 'st-3', stepNumber: 3, name: 'تصمیم نهایی', description: 'جمع‌بندی', evaluationType: 'FINAL_DECISION', isAutomated: false, failAction: 'FLAG_FOR_MANAGER' },
+        ],
+        criteriaWeights: [
+          { id: 'cw-1', name: 'تجربه سرپرستی شیفت در FMCG', weight: 50, targetDescription: 'مدیریت خط تولید', thresholdScore: 6, isMandatory: true },
+          { id: 'cw-2', name: 'آشنایی با استاندارد GMP', weight: 30, targetDescription: 'رعایت بهداشتی', thresholdScore: 5 },
+          { id: 'cw-3', name: 'مدیریت تیم اپراتورها', weight: 20, targetDescription: 'انگیزش تیم', thresholdScore: 5 },
+        ],
+        vetoRules: ['عدم سابقه کار صنعتی'],
+        minimumPassingScore: 6,
+        airigor: 'STRICT',
+        scoringMethod: 'WEIGHTED_AVG',
+        customPromptInstructions: '',
+      },
+    ],
+    generalEvaluationRules: [
+      'هرگز امتیازی بدون شاهد متنی از رزومه ثبت نکن.',
+      'هیچ اقدامی (ایمیل، رد، تغییر مرحله) بدون تأیید مدیر انجام نشود.',
+      'نتایج موتور محلی باید با برچسب صادقانه نمایش داده شوند.',
+    ],
+    emailDraftingGuidelines: 'ایمیل‌ها فقط پیش‌نویس باشند و هرگز خودکار ارسال نشوند.',
+    maxContextHistoryTurns: 6,
+    lastUpdatedJalali: '۱۴۰۵/۰۶/۱۸',
+  };
+
+  // -------------------------------------------------------------
   // Competitor Intelligence 1: HireVue AI Video Interview Submissions & Rubrics
   // -------------------------------------------------------------
   public videoQuestions: VideoInterviewQuestion[] = [
@@ -1384,7 +1468,7 @@ export class HRMSStore {
     'checklistItems', 'metrics', 'automationTasks', 'departments',
     'trainingEnrollments', 'videoSubmissions', 'sourcedCandidates',
     'syndicationChannels', 'knockoutQuestions', 'candidateSkillMatches',
-    'internalMobilityMatches', 'sessionEmployeeId',
+    'internalMobilityMatches', 'sessionEmployeeId', 'aiGovernanceConfig',
   ] as const;
 
   private snapshotPath = path.join(process.cwd(), 'data', 'hrms-store.json');

@@ -118,7 +118,7 @@ export const ChecklistsModule: React.FC<ChecklistsModuleProps> = ({
                 {item.isCompleted ? (
                   <span className="text-[11px] text-emerald-700 font-bold flex items-center gap-1">
                     <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>تکمیل: {toPersianDigits(item.completedAtJalali || '۱۴۰۳/۰۶/۱۵')}</span>
+                    <span>تکمیل: {item.completedAtJalali ? toPersianDigits(item.completedAtJalali) : '—'}</span>
                   </span>
                 ) : (
                   <span className="text-[11px] text-slate-400 flex items-center gap-1">

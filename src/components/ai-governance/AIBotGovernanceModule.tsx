@@ -46,6 +46,7 @@ import {
 import { Skeleton, SkeletonCard, SkeletonText } from '../ui/Skeleton';
 import { EmptyState } from '../ui/EmptyState';
 import { toPersianDigits } from '../../utils/jalali';
+import { showToast } from '../common/Toast';
 
 interface AIBotGovernanceModuleProps {
   candidates?: Candidate[];
@@ -166,7 +167,7 @@ export const AIBotGovernanceModule: React.FC<AIBotGovernanceModuleProps> = ({
 
   const handleRunSandboxEvaluation = async () => {
     if (!sandboxResumeText.trim()) {
-      alert('لطفاً متن رزومه را وارد فرمایید.');
+      showToast('لطفاً متن رزومه را وارد فرمایید.', 'warning');
       return;
     }
     try {
@@ -187,7 +188,7 @@ export const AIBotGovernanceModule: React.FC<AIBotGovernanceModuleProps> = ({
       if (!res.ok) throw new Error(data.error || 'خطا در ارزیابی رزومه');
       setEvaluationResult(data.result);
     } catch (err: any) {
-      alert('خطا در ارزیابی: ' + err.message);
+      showToast('خطا در ارزیابی: ' + err.message, 'error');
     } finally {
       setRunningEvaluation(false);
     }
