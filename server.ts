@@ -8,7 +8,7 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { dbStore } from './server/store';
-import { processAgentChat, generateJobAd, processVoiceCommand, evaluateCandidateWithCriteria } from './server/gemini';
+import { processAgentChat, generateJobAd, processVoiceCommand, evaluateCandidateWithCriteria, resolveGeminiModel } from './server/gemini';
 import { getStatutoryConfig, STATUTORY_YEARS } from './server/statutory';
 import { generatePayrollSlips } from './server/payroll-service';
 import {
@@ -34,7 +34,9 @@ import {
   addJalaliDays,
   formatJalaliDate,
   isValidIranianNationalId,
+  jalaliToGregorian,
   parseJalaliDateString,
+  toEnglishDigits,
   toPersianDigits,
 } from './src/utils/jalali';
 import { tehranNow } from './server/tehran-time';
@@ -42,6 +44,20 @@ import { tehranNow } from './server/tehran-time';
 dotenv.config();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+/**
+ * Generates a sequential, collision-free personnel code from the set of codes
+ * already in use (audit B4). Replaces the old 900-value random picker
+ * (`10` + random 100..999) which could collide and loop without bound.
+ */
+function generateNextPersonnelCode(existing: Set<string>): string {
+  let maxNumeric = 10000;
+  for (const code of existing) {
+    const n = parseInt(toEnglishDigits(code), 10);
+    if (Number.isFinite(n) && n >= maxNumeric) maxNumeric = n;
+  }
+  return toPersianDigits(String(maxNumeric + 1));
+}
 
 async function startServer() {
   const app = express();
@@ -447,13 +463,11 @@ async function startServer() {
       }
 
       cand.stage = CandidateStage.HIRED;
+      (cand as any).hiredAtJalali = tehranNow().jalaliString;
       const now = tehranNow();
 
       const existingCodes = new Set(dbStore.employees.map(e => e.personnelCode));
-      let personnelCode = '';
-      do {
-        personnelCode = toPersianDigits(`10${Math.floor(100 + Math.random() * 900)}`);
-      } while (existingCodes.has(personnelCode));
+      const personnelCode = generateNextPersonnelCode(existingCodes);
 
       const newEmp: Employee = {
         id: `emp-hired-${Date.now()}`,
@@ -725,6 +739,20 @@ async function startServer() {
 
   app.post('/api/competitor/hirevue/evaluate-submission', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateName, jobTitle, brand, simulatedTranscript } = req.body;
+    const transcript = String(simulatedTranscript || '').trim();
+    // This is a DEMO SIMULATOR only — there is no real video/speech AI here.
+    // Scores are derived deterministically from transcript length and clearly
+    // labeled as a simulation (source: 'simulation', aiAvailable: false).
+    // No random numbers, no fabricated "AI" recommendation (audit B1 / REC-11).
+    const length = transcript.length;
+    const score = transcript
+      ? Math.min(98, Math.max(0, Math.round(40 + length / 4)))
+      : 0;
+    const aiRecommendation: 'STRONG_RECOMMEND' | 'RECOMMEND' | 'CONSIDER' | 'DECLINE' =
+      score >= 85 ? 'STRONG_RECOMMEND'
+        : score >= 70 ? 'RECOMMEND'
+        : score >= 55 ? 'CONSIDER'
+        : 'DECLINE';
     const newSubmission = {
       id: `vis-${Date.now()}`,
       candidateId: `cand-${Date.now()}`,
@@ -734,21 +762,23 @@ async function startServer() {
       brand: brand || 'هلدینگ سیلانه سبز',
       submittedAtJalali: `${tehranNow().jalaliString} - لحظاتی پیش`,
       status: 'COMPLETED' as const,
-      overallScore: Math.floor(82 + Math.random() * 16),
-      confidenceScore: Math.floor(80 + Math.random() * 18),
-      clarityScore: Math.floor(85 + Math.random() * 14),
-      fairnessAuditScore: 99,
-      aiRecommendation: 'STRONG_RECOMMEND' as const,
-      summaryInsight: 'تحلیل صوتی و متنی هوش مصنوعی: بیان مسلط، رعایت چارچوب پاسخگویی موثر، تمرکز بر صلاحیت‌های فنی و انطباق کامل با موازین جذب عادلانه و بدون تعصب.',
+      overallScore: score,
+      confidenceScore: score,
+      clarityScore: score,
+      fairnessAuditScore: 100,
+      aiRecommendation,
+      summaryInsight: 'شبیه‌سازی نمایشی ارزیابی ویدیویی — نتیجه‌ای از تحلیل هوش مصنوعی واقعی نیست و صرفاً برای نمایش جریان کار است.',
+      source: 'simulation',
+      aiAvailable: false,
       answers: [
         {
           questionId: 'vq-new-1',
           questionText: 'پاسخ ارائه‌شده در شبیه‌ساز مصاحبه ویدیویی آنلاین هوش مصنوعی',
           videoDurationSeconds: 105,
-          transcript: simulatedTranscript || 'من با تکیه بر تجربیات چندساله در مدیریت فرایندها و روحیه کار تیمی در خطوط تولید و ستاد، آمادگی ارتقای بهره‌وری در هلدینگ سیلانه سبز را دارم.',
-          score: 9.1,
+          transcript: transcript || 'من با تکیه بر تجربیات چندساله در مدیریت فرایندها و روحیه کار تیمی در خطوط تولید و ستاد، آمادگی ارتقای بهره‌وری در هلدینگ سیلانه سبز را دارم.',
+          score: +(score / 10).toFixed(1),
           sentiment: 'CONFIDENT' as const,
-          aiFeedback: 'اعتمادبه‌نفس بالا در گفتار، رعایت ترتیب منطقی و اشاره به سنجه‌های ملموس عملکردی.',
+          aiFeedback: 'شبیه‌سازی نمایشی — این بازخورد نتیجهٔ تحلیل واقعی ویدیو نیست.',
           keyCompetencies: ['حل مسئله', 'ارتباطات حرفه‌ای', 'انگیزش شغلی'],
         },
       ],
@@ -793,9 +823,6 @@ async function startServer() {
     if (channel) {
       channel.status = status;
       channel.lastSyncJalali = `${tehranNow().jalaliString} - لحظاتی پیش`;
-      if (status === 'ACTIVE') {
-        channel.impressionsCount += Math.floor(100 + Math.random() * 300);
-      }
       dbStore.markDirty();
       res.json({ success: true, channel });
     } else {
@@ -917,6 +944,138 @@ async function startServer() {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // AI Bot Governance (audit B5/F2): these endpoints back the
+  // AIBotGovernanceModule which previously called 4 nonexistent routes.
+  // ---------------------------------------------------------------------------
+  app.get('/api/ai-governance/config', requireRole(...HR_AND_MANAGER), (req, res) => {
+    res.json({ config: dbStore.aiGovernanceConfig });
+  });
+
+  app.put('/api/ai-governance/config', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const body = req.body;
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return res.status(400).json({ error: 'پیکربندی نامعتبر است' });
+    }
+    dbStore.aiGovernanceConfig = {
+      ...dbStore.aiGovernanceConfig,
+      ...body,
+      lastUpdatedJalali: tehranNow().jalaliString,
+    };
+    dbStore.markDirty();
+    res.json({ config: dbStore.aiGovernanceConfig });
+  });
+
+  app.post('/api/ai-governance/test-connection', requireRole(...HR_AND_MANAGER), (req, res) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    const model = resolveGeminiModel();
+    const connected = Boolean(apiKey);
+    res.json({
+      connected,
+      model,
+      latencyMs: 0,
+      apiKeyPresent: Boolean(apiKey),
+      message: connected
+        ? `کلید GEMINI_API_KEY تنظیم شده است؛ مدل «${model}» برای پاسخ‌گویی در دسترس است.`
+        : 'کلید GEMINI_API_KEY تنظیم نشده است؛ ارزیابی‌ها با موتور محلی برچسب‌دار انجام می‌شود.',
+      capabilities: connected
+        ? ['Function Calling', 'ارزیابی رزومه', 'تولید شرح شغل']
+        : ['موتور ارزیابی محلی'],
+    });
+  });
+
+  app.post('/api/ai-governance/test-evaluate', requireRole(...HR_AND_MANAGER), async (req, res) => {
+    try {
+      const { candidateName, departmentId, resumeText, pipelineOverride } = req.body || {};
+      const text = String(resumeText || '').trim();
+      if (text.length < 20) {
+        return res.status(400).json({ error: 'متن رزومه برای ارزیابی موجود نیست یا بیش از حد کوتاه است' });
+      }
+      const config = dbStore.aiGovernanceConfig;
+      const pipeline = (pipelineOverride as any)
+        || config.departmentPipelines.find(p => p.departmentId === departmentId)
+        || config.departmentPipelines[0];
+      if (!pipeline) {
+        return res.status(400).json({ error: 'پایپ‌لاین ارزیابی دپارتمان یافت نشد' });
+      }
+
+      const started = Date.now();
+      const criteria = (pipeline.criteriaWeights || []).map((w: any) => ({
+        id: w.id,
+        title: w.name,
+        weight: w.weight,
+        description: w.targetDescription,
+        thresholdScore: w.thresholdScore,
+        isMandatory: w.isMandatory,
+      }));
+      const evalResult = await evaluateCandidateWithCriteria({
+        jobTitle: pipeline.departmentName,
+        department: pipeline.departmentName,
+        candidateName: candidateName || 'کارجوی متقاضی',
+        resumeText: text,
+        criteria,
+        scoringMethod: pipeline.scoringMethod,
+        aiRigor: pipeline.airigor,
+        evaluationInstructions: pipeline.customPromptInstructions,
+      });
+      const latencyMs = Date.now() - started;
+
+      const totalScore = evalResult.overallScore;
+      const minimumPassing = Number(pipeline.minimumPassingScore ?? 6);
+      const passed = !evalResult.vetoTriggered && totalScore >= minimumPassing;
+      const recommendedStage =
+        evalResult.category === CandidateCategory.INTERVIEW_PRIORITY
+          ? CandidateStage.IN_PERSON_INTERVIEW
+          : evalResult.category === CandidateCategory.NEEDS_REVIEW
+            ? CandidateStage.INITIAL_SCREENING
+            : CandidateStage.REJECTED;
+
+      const scores = Object.values(evalResult.criteriaScores || {}).map(n => Number(n) || 0);
+      const avgScore = scores.length
+        ? Math.round((scores.reduce((s, n) => s + n, 0) / scores.length) * 10) / 10
+        : totalScore;
+
+      const stepResults = (pipeline.steps || []).map((step: any) => ({
+        stepNumber: step.stepNumber,
+        stepName: step.name,
+        passed: avgScore >= minimumPassing,
+        score: avgScore,
+        notes: step.description,
+        evidence: (evalResult.resumeQuotes && evalResult.resumeQuotes[0]) || '',
+      }));
+
+      const result = {
+        candidateName: evalResult.candidateName,
+        departmentName: pipeline.departmentName,
+        industrySector: pipeline.industrySector || '',
+        totalScore,
+        passed,
+        recommendedStage,
+        category: evalResult.category,
+        stepResults,
+        criteriaScores: evalResult.criteriaScores,
+        criteriaFeedback: evalResult.criteriaFeedback,
+        culturalFitScore: avgScore,
+        culturalFitAnalysis: evalResult.vetoTriggered
+          ? 'به‌دلیل نقض خط قرمز، تطابق فرهنگی به‌صورت خودکار در سطح پایین قرار گرفت.'
+          : 'تطابق ارزشی بر اساس شاخص‌های ارزیابی‌شده محاسبه شد.',
+        vetoTriggered: evalResult.vetoTriggered,
+        vetoReason: evalResult.vetoReason,
+        strengths: evalResult.strengths,
+        weaknesses: evalResult.weaknesses,
+        evidenceQuotes: evalResult.resumeQuotes,
+        executiveSummary: evalResult.executiveSummary,
+        rawModelReasoning: (evalResult as any).formulaExplanation || '',
+        latencyMs,
+        aiAvailable: evalResult.aiAvailable !== false,
+      };
+      res.json({ result });
+    } catch (err: any) {
+      console.error('AI governance test-evaluate error:', err);
+      res.status(500).json({ error: 'خطا در ارزیابی آزمایشی', details: err?.message });
+    }
+  });
+
   app.post('/api/candidates/compare', requireRole(...HR_AND_MANAGER), (req, res) => {
     const { candidateIds } = req.body;
     if (!Array.isArray(candidateIds) || candidateIds.length < 2) {
@@ -1035,9 +1194,7 @@ async function startServer() {
       return res.status(409).json({ error: 'کد پرسنلی تکراری است' });
     }
     if (!personnelCode) {
-      do {
-        personnelCode = toPersianDigits(`10${Math.floor(100 + Math.random() * 900)}`);
-      } while (existingCodes.has(personnelCode));
+      personnelCode = generateNextPersonnelCode(existingCodes);
     }
 
     const newEmp: Employee = {
@@ -1720,13 +1877,39 @@ async function startServer() {
     const hiredCandidates = dbStore.candidates.filter(c => c.stage === CandidateStage.HIRED).length;
     const totalCandidates = dbStore.candidates.length;
 
+    // Average time-to-hire (calendar days) is now COMPUTED from real data:
+    // appliedAtJalali → hiredAtJalali for candidates that reached HIRED.
+    // costPerHire has no real cost data source yet, so it is reported as null
+    // instead of the previous hardcoded seed figure (audit B3).
+    const hiredWithDates = dbStore.candidates.filter(
+      c => c.stage === CandidateStage.HIRED && (c as any).hiredAtJalali && c.appliedAtJalali
+    );
+    let averageTimeToHireDays: number | null = null;
+    if (hiredWithDates.length > 0) {
+      const diffs = hiredWithDates
+        .map(c => {
+          const a = parseJalaliDateString(c.appliedAtJalali);
+          const h = parseJalaliDateString((c as any).hiredAtJalali);
+          if (!a || !h) return null;
+          const ga = jalaliToGregorian(a.year, a.month, a.day);
+          const gh = jalaliToGregorian(h.year, h.month, h.day);
+          const ms = new Date(gh.year, gh.month - 1, gh.day).getTime()
+            - new Date(ga.year, ga.month - 1, ga.day).getTime();
+          return Math.round(ms / 86400000);
+        })
+        .filter((n): n is number => typeof n === 'number' && n >= 0);
+      if (diffs.length > 0) {
+        averageTimeToHireDays = Math.round(diffs.reduce((s, n) => s + n, 0) / diffs.length);
+      }
+    }
+
     const isHRViewer = isHR();
     res.json({
       turnoverRatePct: dbStore.employees.length > 0
         ? +((resigned.length / dbStore.employees.length) * 100).toFixed(1)
         : 0,
-      averageTimeToHireDays: isHRViewer ? dbStore.metrics.averageTimeToHireDays : null,
-      costPerHireToman: isHRViewer ? dbStore.metrics.costPerHireToman : null,
+      averageTimeToHireDays: isHRViewer ? averageTimeToHireDays : null,
+      costPerHireToman: null,
       activeHeadcount: active.length,
       openPositionsCount: openPositions.length,
       pendingLeavesCount: pendingLeaves.length,

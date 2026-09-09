@@ -54,7 +54,7 @@ interface AttendanceModuleProps {
   leaveBalances: LeaveBalance[];
   employees: Employee[];
   sessionEmployeeId?: string;
-  onCheckInOut: (type: 'CHECK_IN' | 'CHECK_OUT') => void;
+  onCheckInOut: (type: 'CHECK_IN' | 'CHECK_OUT', employeeId?: string) => void;
   onSubmitLeaveRequest: (req: Partial<LeaveRequest>) => void;
   onApproveLeave: (id: string, approved: boolean, comment?: string) => void;
 }
@@ -73,6 +73,9 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
   const [activeSubTab, setActiveSubTab] = useState<'attendance' | 'leaves'>('attendance');
   const [attendanceViewMode, setAttendanceViewMode] = useState<'heatmap' | 'table'>('heatmap');
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
+
+  // HR can register attendance on behalf of a colleague (audit F8).
+  const [attendanceTargetId, setAttendanceTargetId] = useState<string>(sessionEmployeeId || '');
 
   // Week offset for weekly heatmap (0 = current week, -1 = last week, etc.)
   const [weekOffset, setWeekOffset] = useState<number>(0);
@@ -301,10 +304,29 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
             </p>
           </div>
 
+          {currentRole === UserRole.HR_DIRECTOR && (
+            <div className="pt-1">
+              <label className="block text-[10px] font-bold text-slate-500 mb-1">
+                ثبت تردد برای همکار (مدیر منابع انسانی)
+              </label>
+              <select
+                value={attendanceTargetId}
+                onChange={(e) => setAttendanceTargetId(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+              >
+                {employees.map((emp) => (
+                  <option key={emp.id} value={emp.id}>
+                    {emp.fullName} — {emp.jobTitle}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3 pt-2">
             <button
               type="button"
-              onClick={() => onCheckInOut('CHECK_IN')}
+              onClick={() => onCheckInOut('CHECK_IN', currentRole === UserRole.HR_DIRECTOR ? attendanceTargetId : undefined)}
               className="px-4 py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm hover:shadow-md cursor-pointer"
             >
               <LogIn className="w-4 h-4" />
@@ -313,7 +335,7 @@ export const AttendanceModule: React.FC<AttendanceModuleProps> = ({
 
             <button
               type="button"
-              onClick={() => onCheckInOut('CHECK_OUT')}
+              onClick={() => onCheckInOut('CHECK_OUT', currentRole === UserRole.HR_DIRECTOR ? attendanceTargetId : undefined)}
               className="px-4 py-3 bg-slate-800 hover:bg-slate-900 active:bg-slate-950 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm hover:shadow-md cursor-pointer"
             >
               <LogOut className="w-4 h-4" />

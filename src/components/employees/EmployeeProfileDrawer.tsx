@@ -448,20 +448,24 @@ export const EmployeeProfileDrawer: React.FC<EmployeeProfileDrawerProps> = ({
                         </div>
                       </div>
 
-                      <a
-                        href={doc.fileUrl}
-                        download
-                        onClick={(e) => {
-                          if (doc.fileUrl === '#') {
-                            e.preventDefault();
-                            alert('امکان مشاهده سند وجود ندارد.');
-                          }
-                        }}
-                        className="p-1.5 rounded-[8px] text-text-3 hover:text-brand hover:bg-surface-1 transition-colors cursor-pointer"
-                        title="دانلود سند"
-                      >
-                        <Download className="w-4 h-4" />
-                      </a>
+                      {doc.fileUrl && doc.fileUrl !== '#' ? (
+                        <a
+                          href={doc.fileUrl}
+                          download
+                          className="p-1.5 rounded-[8px] text-text-3 hover:text-brand hover:bg-surface-1 transition-colors cursor-pointer"
+                          title="دانلود سند"
+                        >
+                          <Download className="w-4 h-4" />
+                        </a>
+                      ) : (
+                        <span
+                          className="p-1.5 rounded-[8px] text-text-3/50 cursor-not-allowed"
+                          title="سندی بارگذاری نشده است"
+                          aria-disabled="true"
+                        >
+                          <Download className="w-4 h-4" />
+                        </span>
+                      )}
                     </div>
                   ))}
                 </div>

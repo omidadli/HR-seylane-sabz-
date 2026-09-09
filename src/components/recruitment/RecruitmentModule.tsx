@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Candidate, CandidateStage, CandidateCategory, JobPosting, UserRole } from '../../types';
 import { toPersianDigits } from '../../utils/jalali';
+import { showToast } from '../common/Toast';
 import { KanbanBoard } from './KanbanBoard';
 import { AIAgentChat } from './AIAgentChat';
 import { BulkUploadModal } from './BulkUploadModal';
@@ -164,7 +165,7 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
       setSelectedCompareIds(selectedCompareIds.filter((id) => id !== candidate.id));
     } else {
       if (selectedCompareIds.length >= 4) {
-        alert('امکان مقایسه همزمان حداکثر ۴ کارجو وجود دارد.');
+        showToast('امکان مقایسه همزمان حداکثر ۴ کارجو وجود دارد.', 'warning');
         return;
       }
       setSelectedCompareIds([...selectedCompareIds, candidate.id]);
@@ -674,7 +675,7 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
             jobs={jobs}
             activeJobId={activeJobId}
             onApproveEmailDraft={(draft) => {
-              alert(`پیش‌نویس ایمیل برای ${draft.candidateName} تایید و در کارتابل ذخیره شد.`);
+              showToast(`پیش‌نویس ایمیل برای ${draft.candidateName} تایید و در کارتابل ذخیره شد.`, 'success');
             }}
           />
         )}

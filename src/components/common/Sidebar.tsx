@@ -185,8 +185,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label: 'مدیریت دستیار',
           description: 'تنظیم رفتار دستیار و سند فرهنگ سازمانی',
           icon: Sparkles,
-          badge: 'به‌زودی',
-          comingSoon: true,
+          badge: 'حاکمیت هوش مصنوعی',
         },
       ],
     },
@@ -413,7 +412,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="text-xs font-black">سیلانه سبز</span>
               </span>
               <span className="text-[9px] bg-brand-soft text-brand border border-brand/20 px-1.5 py-0.5 rounded-[6px] font-black">
-                قانون کار ۱۴۰۳
+                قانون کار
               </span>
             </div>
             <p className="text-[10px] text-text-3 leading-relaxed font-medium">

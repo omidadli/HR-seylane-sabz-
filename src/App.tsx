@@ -340,10 +340,27 @@ export default function App() {
     }
   };
 
+  /**
+   * Update + delete route through App state so the central `employees` array
+   * (and every module depending on it) stays in sync (audit F1). These throw
+   * on failure (apiFetch attaches err.status/err.data) so the module can keep
+   * its own error/409 handling.
+   */
+  const handleUpdateEmployee = async (id: string, patch: Partial<Employee>): Promise<Employee> => {
+    const updated = await apiFetch(`/api/employees/${id}`, jsonInit('PATCH', patch));
+    setEmployees((prev) => prev.map((e) => (e.id === id ? updated : e)));
+    return updated;
+  };
+
+  const handleDeleteEmployee = async (id: string): Promise<void> => {
+    await apiFetch(`/api/employees/${id}`, { method: 'DELETE' });
+    setEmployees((prev) => prev.filter((e) => e.id !== id));
+  };
+
   // Module 3: Attendance Handlers
-  const handleCheckInOut = async (type: 'CHECK_IN' | 'CHECK_OUT') => {
+  const handleCheckInOut = async (type: 'CHECK_IN' | 'CHECK_OUT', employeeId?: string) => {
     try {
-      const updated = await apiFetch('/api/attendance/check-in-out', jsonInit('POST', { type }));
+      const updated = await apiFetch('/api/attendance/check-in-out', jsonInit('POST', { type, employeeId }));
       setAttendances((prev) => {
         const idx = prev.findIndex((a) => a.id === updated.id);
         if (idx >= 0) {
@@ -653,6 +670,8 @@ export default function App() {
                   employees={employees}
                   currentRole={currentRole}
                   onCreateEmployee={handleCreateEmployee}
+                  onUpdateEmployee={handleUpdateEmployee}
+                  onDeleteEmployee={handleDeleteEmployee}
                 />
               )}
 

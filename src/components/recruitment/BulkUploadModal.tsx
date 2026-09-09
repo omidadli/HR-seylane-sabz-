@@ -4,6 +4,7 @@ import { toPersianDigits } from '../../utils/jalali';
 import JSZip from 'jszip';
 import { extractResumeText } from '../../utils/resumeTextExtraction';
 import { HierarchicalJobPicker } from './HierarchicalJobPicker';
+import { showToast } from '../common/Toast';
 import {
   UploadCloud,
   FileText,
@@ -367,11 +368,11 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         setZipMessage({ name: zipFile.name, count: unpackedFiles.length });
         enqueueFilesForExtraction(unpackedFiles);
       } else {
-        alert('فایل فشرده خالی است یا فایل رزومه معتبری در آن یافت نشد.');
+        showToast('فایل فشرده خالی است یا فایل رزومه معتبری در آن یافت نشد.', 'warning');
       }
     } catch (err) {
       console.error('Failed to unpack zip:', err);
-      alert('خطا در بازگشایی فایل فشرده ZIP. لطفاً از صحت و سالم بودن فایل اطمینان حاصل فرمایید.');
+      showToast('خطا در بازگشایی فایل فشرده ZIP. لطفاً از صحت و سالم بودن فایل اطمینان حاصل فرمایید.', 'error');
     } finally {
       setIsExtractingZip(false);
     }
@@ -522,31 +523,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     }
 
     setIsProcessing(true);
-    setServerProgress(10);
+    setServerProgress(20);
     setServerProgressStageText('در حال ارسال رزومه‌های استخراج‌شده به موتور سنجش هوشمند...');
     setProcessedStats(null);
-
-    const stages = [
-      { p: 30, text: 'استخراج متادیتا، مهارت‌ها و تجارب شغلی از رزومه‌ها...' },
-      { p: 60, text: 'تطبیق شایستگی‌ها با الزامات شغلی و استخراج مستندات نقل‌قولی...' },
-      { p: 85, text: 'تولید استدلال تحلیلی، رتبه‌بندی اولویت‌ها و محاسبه نمرات شایستگی...' },
-    ];
-
-    let stageIdx = 0;
-    const interval = setInterval(() => {
-      setServerProgress((prev) => {
-        if (prev >= 90) {
-          clearInterval(interval);
-          return 90;
-        }
-        const next = prev + Math.floor(Math.random() * 12) + 6;
-        if (stageIdx < stages.length && next >= stages[stageIdx].p) {
-          setServerProgressStageText(stages[stageIdx].text);
-          stageIdx++;
-        }
-        return next;
-      });
-    }, 250);
 
     try {
       const res = await fetch('/api/candidates/bulk-upload', {
@@ -563,17 +542,21 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         }),
       });
 
-      clearInterval(interval);
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
         setServerProgress(0);
+        setServerProgressStageText('خطا در پردازش — فایل‌ها ثبت نشدند.');
         setUploadError(data?.error || 'خطا در ارزیابی و ثبت کارجویان توسط سرور');
         return;
       }
 
       setServerProgress(100);
-      setServerProgressStageText('ثبت و ارزیابی رزومه‌ها با موفقیت انجام شد.');
+      setServerProgressStageText(
+        data?.aiAvailable === false
+          ? 'ثبت رزومه‌ها انجام شد (ارزیابی با موتور محلی — بدون Gemini).'
+          : 'ثبت و ارزیابی رزومه‌ها با موفقیت انجام شد.'
+      );
       setProcessedStats({
         total: data.processedCount ?? readyFiles.length,
         priority: data.interviewPriorityCount ?? 0,
@@ -583,8 +566,9 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
 
       onUploadComplete(data);
     } catch (err: any) {
-      clearInterval(interval);
       console.error(err);
+      setServerProgress(0);
+      setServerProgressStageText('خطای شبکه در ارسال فایل‌ها به سرور.');
       setUploadError(err?.message || 'خطای شبکه در ارسال فایل‌ها به سرور');
     } finally {
       setIsProcessing(false);

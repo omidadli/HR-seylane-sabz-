@@ -8,7 +8,7 @@ import {
   HRDashboardMetrics,
   UserRole,
 } from '../../types';
-import { toPersianDigits, formatToman } from '../../utils/jalali';
+import { toPersianDigits, formatToman, nowJalaliString } from '../../utils/jalali';
 import {
   TrendingDown,
   TrendingUp,
@@ -220,24 +220,18 @@ export const AnalyticsModule: React.FC<AnalyticsModuleProps> = ({
       deptMap[shortName] = (deptMap[shortName] || 0) + (req.daysCount || 1);
     });
 
-    // Ensure baseline standard departments appear even with few initial requests
-    const defaultDepts: { name: string; days: number }[] = [
-      { name: 'کارخانجات تولیدی', days: deptMap['کارخانجات تولیدی'] || 48 },
-      { name: 'فروش و بازاریابی', days: deptMap['فروش و بازاریابی'] || 32 },
-      { name: 'زنجیره تامین و لجستیک', days: deptMap['زنجیره تامین و لجستیک'] || 26 },
-      { name: 'تحقیق و توسعه (R&D)', days: deptMap['تحقیق و توسعه (R&D)'] || 18 },
-      { name: 'امور مالی و بهای تمام‌شده', days: deptMap['امور مالی و بهای تمام‌شده'] || 15 },
-      { name: 'منابع انسانی و اداری', days: deptMap['منابع انسانی و اداری'] || 12 },
-    ];
-
-    return defaultDepts;
+    // Return ONLY departments with real leave data — no fabricated baseline
+    // values (audit F4). The chart handles an empty list gracefully.
+    return Object.entries(deptMap)
+      .map(([name, days]) => ({ name, days }))
+      .sort((a, b) => b.days - a.days);
   }, [leaveRequests, employees]);
 
   // Comprehensive JSON Export
   const handleExportData = () => {
     const exportPayload = {
       title: 'سامانه جامع منابع انسانی سیلانه سبز - گزارش تحلیلی شاخص‌های کلیدی',
-      generatedAtJalali: (metrics as any)?.computedAtJalali || '۱۴۰۳/۰۶/۱۸',
+      generatedAtJalali: (metrics as any)?.computedAtJalali || nowJalaliString(),
       metrics,
       recruitmentFunnel: {
         totalResumes: funnelTotal,
