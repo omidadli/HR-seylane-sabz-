@@ -22,6 +22,7 @@ import {
   Video,
   Network,
   Zap,
+  Bot,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ModuleKey, canAccessModule } from './Sidebar';
@@ -100,6 +101,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     const items: CommandItem[] = [
       // Quick AI & System Actions
       {
+        id: 'action-ai-governance',
+        title: 'داشبورد جامع مدیریت و حاکمیت هوش مصنوعی (Gemini Engine)',
+        subtitle: 'مدیریت رفتار بات، بارگذاری سند فرهنگ سازمانی، پایپ‌لاین دپارتمان‌ها و تست زنده',
+        category: 'اقدامات سریع و هوش مصنوعی',
+        icon: Bot,
+        badge: 'Gemini Control Center',
+        action: () => {
+          onClose();
+          onSelectModule('ai-governance');
+        },
+      },
+      {
         id: 'action-voice',
         title: 'گفتگوی صوتی هوشمند با دستیار منابع انسانی',
         subtitle: 'پرسش درباره قوانین، گزارش کارخانه، صدور حقوق و استخدام',
@@ -173,6 +186,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
 
       // Navigation Modules
+      {
+        id: 'nav-ai-governance',
+        title: 'مدیریت و حاکمیت هوش مصنوعی (Gemini Bot Center)',
+        subtitle: 'پیکربندی فرهنگ سازمانی، پایپ‌لاین ارزیابی دپارتمان‌ها و رفتار بات',
+        category: 'بخش‌های اصلی سامانه',
+        icon: Bot,
+        badge: 'Gemini AI',
+        action: () => {
+          onClose();
+          onSelectModule('ai-governance');
+        },
+      },
       {
         id: 'nav-recruitment',
         title: 'جذب و استخدام (کانبان و غربالگری هوشمند)',

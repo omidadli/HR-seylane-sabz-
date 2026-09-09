@@ -19,6 +19,7 @@ import {
 
 export type ModuleKey =
   | 'dashboard'
+  | 'ai-governance'
   | 'recruitment'
   | 'employees'
   | 'attendance'
@@ -36,6 +37,7 @@ export type ModuleKey =
  */
 export const MODULE_ACCESS: Record<ModuleKey, UserRole[]> = {
   dashboard: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
+  'ai-governance': [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER],
   recruitment: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER],
   employees: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
   attendance: [UserRole.HR_DIRECTOR, UserRole.DEPT_MANAGER, UserRole.EMPLOYEE],
@@ -71,6 +73,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     icon: React.ElementType;
     badge?: string;
     isPrimary?: boolean;
+    comingSoon?: boolean;
   }[] = [
     {
       key: 'dashboard',
@@ -79,6 +82,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: LayoutDashboard,
       badge: 'مرکزی',
       isPrimary: true,
+    },
+    {
+      key: 'ai-governance',
+      label: 'مدیریت و حاکمیت هوش مصنوعی',
+      description: 'تنظیم رفتار بات، فرهنگ سازمانی، پایپ‌لاین و اتصال Gemini',
+      icon: Bot,
+      badge: 'به‌زودی',
+      isPrimary: true,
+      comingSoon: true,
     },
     {
       key: 'recruitment',
@@ -171,14 +183,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {menuItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeModule === item.key;
-            const allowed = canAccessModule(currentRole, item.key);
+            const allowed = canAccessModule(currentRole, item.key) && !item.comingSoon;
 
             return (
               <button
                 key={item.key}
                 type="button"
                 disabled={!allowed}
-                title={allowed ? undefined : 'دسترسی این بخش برای نقش کاربری شما محدود است'}
+                title={
+                  item.comingSoon
+                    ? 'این بخش هنوز به سرور وصل نشده و به‌زودی فعال می‌شود'
+                    : allowed
+                      ? undefined
+                      : 'دسترسی این بخش برای نقش کاربری شما محدود است'
+                }
                 onClick={() => {
                   if (!allowed) return;
                   onSelectModule(item.key);

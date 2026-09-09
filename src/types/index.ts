@@ -519,4 +519,111 @@ export interface KnockoutQuestion {
   explanation: string;
 }
 
+// ---------------- AI Bot Governance & Department Pipeline Types ----------------
+export type StepEvaluationType =
+  | 'KNOCKOUT'
+  | 'EXPERIENCE_VERIFY'
+  | 'SKILL_MATCH'
+  | 'CULTURE_FIT'
+  | 'BEHAVIORAL'
+  | 'FINAL_DECISION';
+
+export interface PipelineStep {
+  id: string;
+  stepNumber: number;
+  name: string;
+  description: string;
+  evaluationType: StepEvaluationType;
+  isAutomated: boolean;
+  failAction: 'REJECT' | 'FLAG_FOR_MANAGER' | 'DOWNGRADE_SCORE';
+  promptHint?: string;
+}
+
+export interface PipelineCriteriaWeight {
+  id: string;
+  name: string;
+  weight: number; // 0 to 100
+  targetDescription: string;
+  thresholdScore: number; // 1 to 10
+  isMandatory?: boolean;
+}
+
+export interface DepartmentEvaluationPipeline {
+  id: string;
+  departmentId: string;
+  departmentName: string;
+  industrySector: string; // e.g. "صنایع آرایشی و بهداشتی / دارویی (FMCG)"
+  description: string;
+  steps: PipelineStep[];
+  criteriaWeights: PipelineCriteriaWeight[];
+  vetoRules: string[]; // Red line criteria for auto-rejection
+  minimumPassingScore: number;
+  airigor: 'STRICT' | 'BALANCED' | 'LENIENT';
+  scoringMethod: ScoringMethod;
+  customPromptInstructions: string;
+}
+
+export interface OrganizationalCultureConfig {
+  companyVision: string;
+  holdingBrands: string[];
+  coreValues: Array<{
+    id: string;
+    title: string;
+    description: string;
+    weight: number;
+  }>;
+  companyCultureDoc: string; // Rich markdown text of organization culture
+  unacceptableBehaviors: string[]; // Red lines / رفتارهای غیرقابل قبول
+  toneOfVoice: 'FORMAL' | 'EMPATHETIC' | 'STRICT' | 'PROFESSIONAL';
+  culturalFitWeightPct: number; // e.g. 20%
+}
+
+export interface AIBotGovernanceConfig {
+  botName: string;
+  botRole: string;
+  modelName: string;
+  systemPromptTemplate: string;
+  strictnessLevel: 'STRICT' | 'BALANCED' | 'LENIENT';
+  culture: OrganizationalCultureConfig;
+  departmentPipelines: DepartmentEvaluationPipeline[];
+  generalEvaluationRules: string[];
+  emailDraftingGuidelines: string;
+  maxContextHistoryTurns: number;
+  lastUpdatedJalali: string;
+}
+
+export interface PipelineEvaluationStepResult {
+  stepNumber: number;
+  stepName: string;
+  passed: boolean;
+  score: number; // 1 to 10
+  notes: string;
+  evidence: string;
+}
+
+export interface PipelineEvaluationTestResult {
+  candidateName: string;
+  departmentName: string;
+  industrySector: string;
+  totalScore: number;
+  passed: boolean;
+  recommendedStage: CandidateStage;
+  category: CandidateCategory;
+  stepResults: PipelineEvaluationStepResult[];
+  criteriaScores: Record<string, number>;
+  criteriaFeedback: Record<string, string>;
+  culturalFitScore: number;
+  culturalFitAnalysis: string;
+  vetoTriggered: boolean;
+  vetoReason?: string;
+  strengths: string[];
+  weaknesses: string[];
+  evidenceQuotes: string[];
+  executiveSummary: string;
+  rawModelReasoning: string;
+  latencyMs: number;
+  aiAvailable: boolean;
+}
+
+
 

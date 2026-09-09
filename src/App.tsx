@@ -25,6 +25,7 @@ import {
 import { Header } from './components/common/Header';
 import { Sidebar, ModuleKey, MODULE_ACCESS } from './components/common/Sidebar';
 import { ExecutiveDashboard } from './components/dashboard/ExecutiveDashboard';
+import { AIBotGovernanceModule } from './components/ai-governance/AIBotGovernanceModule';
 import { RecruitmentModule } from './components/recruitment/RecruitmentModule';
 import { EmployeesModule } from './components/employees/EmployeesModule';
 import { AttendanceModule } from './components/attendance/AttendanceModule';
@@ -585,10 +586,23 @@ export default function App() {
                   candidates={candidates}
                   attendances={attendances}
                   employees={employees}
+                  leaveRequests={leaveRequests}
+                  payrollSlips={payrollSlips}
+                  checklists={checklists}
+                  trainingCourses={trainingCourses}
+                  performanceGoals={performanceGoals}
                   onNavigate={(mod) => selectModule(mod)}
                   onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
                   onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
                   onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+                />
+              )}
+
+              {/* Module AI Bot Governance & Command Center */}
+              {activeModule === 'ai-governance' && (
+                <AIBotGovernanceModule
+                  candidates={candidates}
+                  jobs={jobs}
                 />
               )}
 
