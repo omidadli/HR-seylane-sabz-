@@ -42,6 +42,7 @@ import { FloatingQuickActions } from './components/common/FloatingQuickActions';
 import { BottomNav } from './components/common/BottomNav';
 import { Breadcrumbs } from './components/common/Breadcrumbs';
 import { ToastContainer, showToast } from './components/common/Toast';
+import { GlobalLoader } from './components/common/GlobalLoader';
 import { Menu, X, Loader2 } from 'lucide-react';
 
 /**
@@ -538,7 +539,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100/90 text-slate-900 font-sans flex flex-col selection:bg-emerald-200 selection:text-emerald-950">
+    <div className="min-h-screen bg-surface-0 text-text-1 font-sans flex flex-col selection:bg-brand/20 selection:text-brand transition-colors">
       {/* Top Application Header */}
       <Header
         currentRole={currentRole}
@@ -546,6 +547,28 @@ export default function App() {
         onOpenVoiceAssistant={() => setIsVoiceModalOpen(true)}
         onOpenJobGenerator={() => setIsJobAdModalOpen(true)}
         onOpenCommandPalette={() => setIsCommandPaletteOpen(true)}
+        onToggleMobileSidebar={() => setIsMobileSidebarOpen(!isMobileSidebarOpen)}
+        activeModuleTitle={
+          activeModule === 'dashboard'
+            ? 'پیشخوان هوشمند'
+            : activeModule === 'recruitment'
+            ? 'جذب و استخدام'
+            : activeModule === 'employees'
+            ? 'پرونده پرسنلی'
+            : activeModule === 'attendance'
+            ? 'تردد و مرخصی‌ها'
+            : activeModule === 'payroll'
+            ? 'حقوق و دستمزد'
+            : activeModule === 'performance'
+            ? 'مدیریت عملکرد'
+            : activeModule === 'training'
+            ? 'آموزش و مهارت‌ها'
+            : activeModule === 'checklists'
+            ? 'چک‌لیست‌های خدمت'
+            : activeModule === 'analytics'
+            ? 'هوش تجاری و گزارشات'
+            : 'حاکمیت هوش مصنوعی'
+        }
       />
 
       {/* Main Layout Body */}
@@ -553,7 +576,8 @@ export default function App() {
         {/* Sidebar Navigation */}
         <Sidebar
           activeModule={activeModule}
-          onSelectModule={setActiveModule}
+          onSelectModule={selectModule}
+          currentRole={currentRole}
           isMobileOpen={isMobileSidebarOpen}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
         />
@@ -561,10 +585,7 @@ export default function App() {
         {/* Dynamic Main Workspace Container */}
         <main className="flex-1 min-w-0 overflow-y-auto p-2.5 sm:p-4 md:p-6 lg:p-7 max-w-7xl mx-auto w-full pb-28 lg:pb-12 touch-scroll">
           {isLoading ? (
-            <div className="h-96 flex flex-col items-center justify-center gap-3 text-slate-500">
-              <Loader2 className="w-8 h-8 text-emerald-600 animate-spin" />
-              <div className="text-xs font-bold">در حال بارگذاری داده‌های سازمانی هلدینگ سیلانه سبز...</div>
-            </div>
+            <GlobalLoader message="در حال فراخوانی داده‌های سازمانی و پایش کارخانجات سیلانه سبز..." />
           ) : (
             <>
               {/* Breadcrumbs & Quick Context Switcher */}
@@ -691,7 +712,17 @@ export default function App() {
               )}
 
               {/* Module 8: Analytics & KPIs */}
-              {activeModule === 'analytics' && <AnalyticsModule metrics={metrics} candidates={candidates} />}
+              {activeModule === 'analytics' && (
+                <AnalyticsModule
+                  metrics={metrics}
+                  candidates={candidates}
+                  employees={employees}
+                  leaveRequests={leaveRequests}
+                  departments={departments}
+                  currentRole={currentRole}
+                  isLoading={isLoading}
+                />
+              )}
             </>
           )}
         </main>

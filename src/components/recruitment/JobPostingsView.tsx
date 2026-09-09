@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { JobPosting, JobCriteria } from '../../types';
+import { JobPosting } from '../../types';
 import { toPersianDigits, getTodayJalali, formatJalaliDate } from '../../utils/jalali';
 import { JalaliDatePicker } from '../common/JalaliDatePicker';
+import { Modal } from '../ui/Modal';
 import {
   Briefcase,
   Plus,
@@ -9,8 +10,6 @@ import {
   Building,
   Users,
   Calendar,
-  CheckCircle,
-  Archive,
   Sparkles,
   Trash2,
   SlidersHorizontal,
@@ -88,10 +87,10 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
   return (
     <div className="space-y-4">
       {/* Header bar */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-1 p-4 rounded-[16px] border border-border-default shadow-2xs">
         <div>
-          <h2 className="text-sm font-bold text-slate-900">موقعیت‌های شغلی فعال و بایگانی</h2>
-          <p className="text-xs text-slate-500">
+          <h2 className="text-sm font-extrabold text-text-1">موقعیت‌های شغلی فعال و بایگانی</h2>
+          <p className="text-xs text-text-3">
             مدیریت ردیف‌های استخدامی و تنظیم وزن معیارهای ارزیابی هوش مصنوعی
           </p>
         </div>
@@ -99,7 +98,7 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
         <button
           type="button"
           onClick={() => setIsCreateModalOpen(true)}
-          className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center gap-1.5 shadow-2xs self-start sm:self-auto cursor-pointer"
+          className="px-4 py-2 bg-brand hover:bg-brand-hover text-white rounded-[10px] text-xs font-bold transition-colors flex items-center gap-1.5 shadow-2xs self-start sm:self-auto cursor-pointer"
         >
           <Plus className="w-4 h-4" />
           <span>تعریف موقعیت شغلی جدید</span>
@@ -115,46 +114,46 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
             <div
               key={job.id}
               onClick={() => onSelectJob(job.id)}
-              className={`bg-white rounded-2xl p-4 border transition-all cursor-pointer shadow-2xs relative ${
+              className={`bg-surface-1 rounded-[16px] p-4 border transition-all cursor-pointer shadow-2xs relative ${
                 isSelected
-                  ? 'border-emerald-600 ring-2 ring-emerald-500/20'
-                  : 'border-slate-200 hover:border-slate-300'
+                  ? 'border-brand ring-2 ring-brand/20'
+                  : 'border-border-default hover:border-border-default/80'
               }`}
             >
               <div className="flex items-start justify-between gap-2 mb-2">
-                <h3 className="font-bold text-sm text-slate-900 line-clamp-1">{job.title}</h3>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <h3 className="font-extrabold text-sm text-text-1 line-clamp-1">{job.title}</h3>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-brand-soft text-brand border border-brand/20">
                   {job.status === 'ACTIVE' ? 'فعال' : 'بایگانی'}
                 </span>
               </div>
 
-              <div className="space-y-1.5 text-xs text-slate-600 mb-3">
+              <div className="space-y-1.5 text-xs text-text-2 mb-3">
                 <div className="flex items-center gap-1.5">
-                  <Building className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <Building className="w-3.5 h-3.5 text-text-3 shrink-0" />
                   <span className="truncate">{job.department}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <MapPin className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <MapPin className="w-3.5 h-3.5 text-text-3 shrink-0" />
                   <span>{job.location} • {job.employmentType}</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                  <Calendar className="w-3.5 h-3.5 text-text-3 shrink-0" />
                   <span>تاریخ ایجاد: {toPersianDigits(job.createdAtJalali)}</span>
                 </div>
               </div>
 
               {/* Evaluation criteria preview */}
               {job.criteria && job.criteria.length > 0 && (
-                <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100 mb-3">
-                  <div className="text-[11px] font-bold text-slate-700 mb-1.5 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-emerald-600" />
+                <div className="bg-surface-2 p-2.5 rounded-[10px] border border-border-default mb-3">
+                  <div className="text-[11px] font-bold text-text-1 mb-1.5 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3 text-brand" />
                     <span>شاخص‌های وزنی هوش مصنوعی ({toPersianDigits(job.criteria.length)} معیار):</span>
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {job.criteria.map((c) => (
                       <span
                         key={c.id}
-                        className="text-[10px] px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700 font-medium"
+                        className="text-[10px] px-2 py-0.5 rounded-md bg-surface-1 border border-border-default text-text-2 font-medium"
                       >
                         {c.title} ({toPersianDigits(c.weight)}٪)
                       </span>
@@ -164,9 +163,9 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
               )}
 
               {/* Footer */}
-              <div className="pt-2.5 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-1 text-slate-600 font-medium">
-                  <Users className="w-3.5 h-3.5 text-emerald-600" />
+              <div className="pt-2.5 border-t border-border-default flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-1 text-text-2 font-medium">
+                  <Users className="w-3.5 h-3.5 text-brand" />
                   <span>{toPersianDigits(job.applicationsCount)} رزومه دریافت شده</span>
                 </div>
 
@@ -181,16 +180,16 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
                         onSelectJob(job.id);
                       }
                     }}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[11px] font-bold transition-all border border-emerald-200"
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-[8px] bg-brand-soft hover:bg-brand-soft/80 text-brand text-[11px] font-bold transition-all border border-brand/20 cursor-pointer"
                     title="تنظیم شاخصه‌ها، وزن‌ها و دستورالعمل هوش مصنوعی"
                   >
-                    <SlidersHorizontal className="w-3.5 h-3.5 text-emerald-700" />
+                    <SlidersHorizontal className="w-3.5 h-3.5 text-brand" />
                     <span>ماتریس شاخص‌ها و وزن‌دهی AI</span>
                   </button>
 
                   <span
                     className={`text-[11px] font-bold ${
-                      isSelected ? 'text-emerald-700' : 'text-slate-400'
+                      isSelected ? 'text-brand' : 'text-text-3'
                     }`}
                   >
                     {isSelected ? 'موقعیت فعال' : 'انتخاب'}
@@ -202,155 +201,157 @@ export const JobPostingsView: React.FC<JobPostingsViewProps> = ({
         })}
       </div>
 
-      {/* Create Job Modal */}
-      {isCreateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
-            <h3 className="text-base font-bold text-slate-900 pb-3 border-b border-slate-200 mb-4">
-              تعریف ردیف شغلی جدید با معیارهای ارزیابی Gemini
-            </h3>
-
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    عنوان شغل <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="مثلاً: مهندس ارشد دواپس و زیرساخت"
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    واحد سازمانی / دپارتمان
-                  </label>
-                  <input
-                    type="text"
-                    value={department}
-                    onChange={(e) => setDepartment(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    نوع همکاری
-                  </label>
-                  <select
-                    value={employmentType}
-                    onChange={(e) => setEmploymentType(e.target.value)}
-                    className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                  >
-                    <option value="تمام‌وقت">تمام‌وقت</option>
-                    <option value="پاره‌وقت">پاره‌وقت</option>
-                    <option value="پروژه‌ای / قراردادی">پروژه‌ای / قراردادی</option>
-                    <option value="دورکاری">دورکاری</option>
-                  </select>
-                </div>
-
-                <div>
-                  <JalaliDatePicker
-                    label="تاریخ انتشار آگهی"
-                    value={dateJalali}
-                    onChange={(v) => setDateJalali(v)}
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  شرح موقعیت شغلی و ماموریت‌ها
-                </label>
-                <textarea
-                  rows={2}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="شرح انتظارات و وظایف اصلی موقعیت..."
-                  className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
-
-              {/* Evaluation criteria & weights */}
-              <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>شاخص‌های وزنی ارزیابی هوش مصنوعی (مجموع وزن‌ها ۱۰۰٪):</span>
-                  </span>
-
-                  <button
-                    type="button"
-                    onClick={handleAddCriterion}
-                    className="text-[11px] font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3" />
-                    <span>افزودن معیار</span>
-                  </button>
-                </div>
-
-                <div className="space-y-2">
-                  {criteriaList.map((crit, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={crit.title}
-                        onChange={(e) => handleUpdateCriterion(idx, 'title', e.target.value)}
-                        className="flex-1 px-3 py-1.5 text-xs bg-white border border-slate-300 rounded-lg"
-                      />
-                      <div className="flex items-center gap-1">
-                        <span className="text-[11px] text-slate-500 font-medium">وزن:</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={100}
-                          value={crit.weight}
-                          onChange={(e) =>
-                            handleUpdateCriterion(idx, 'weight', parseInt(e.target.value, 10) || 10)
-                          }
-                          className="w-14 px-2 py-1 text-xs bg-white border border-slate-300 rounded-lg text-center font-bold text-emerald-800"
-                        />
-                        <span className="text-[11px] text-slate-500">٪</span>
-                      </div>
-                      {criteriaList.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveCriterion(idx)}
-                          className="p-1 text-slate-400 hover:text-rose-600"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Actions */}
-              <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2.5">
-                <button
-                  type="button"
-                  onClick={() => setIsCreateModalOpen(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 rounded-xl"
-                >
-                  انصراف
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-xs"
-                >
-                  ثبت و فعال‌سازی آگهی
-                </button>
-              </div>
-            </form>
+      {/* Create Job Modal standardized with Modal primitive */}
+      <Modal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        size="lg"
+        title={
+          <div className="flex items-center gap-2">
+            <Briefcase className="w-5 h-5 text-brand" />
+            <span>تعریف ردیف شغلی جدید با معیارهای ارزیابی Gemini</span>
           </div>
-        </div>
-      )}
+        }
+      >
+        <form onSubmit={handleSubmit} className="space-y-4 text-text-1">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-text-1 mb-1">
+                عنوان شغل <span className="text-danger">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="مثلاً: مهندس ارشد دواپس و زیرساخت"
+                className="w-full px-3 py-2 text-xs bg-surface-2 border border-border-default rounded-[10px] text-text-1 focus:bg-surface-1 focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-text-1 mb-1">
+                واحد سازمانی / دپارتمان
+              </label>
+              <input
+                type="text"
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+                className="w-full px-3 py-2 text-xs bg-surface-2 border border-border-default rounded-[10px] text-text-1 focus:bg-surface-1 focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-text-1 mb-1">
+                نوع همکاری
+              </label>
+              <select
+                value={employmentType}
+                onChange={(e) => setEmploymentType(e.target.value)}
+                className="w-full px-3 py-2 text-xs bg-surface-2 border border-border-default rounded-[10px] text-text-1 focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+              >
+                <option value="تمام‌وقت">تمام‌وقت</option>
+                <option value="پاره‌وقت">پاره‌وقت</option>
+                <option value="پروژه‌ای / قراردادی">پروژه‌ای / قراردادی</option>
+                <option value="دورکاری">دورکاری</option>
+              </select>
+            </div>
+
+            <div>
+              <JalaliDatePicker
+                label="تاریخ انتشار آگهی"
+                value={dateJalali}
+                onChange={(v) => setDateJalali(v)}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-text-1 mb-1">
+              شرح موقعیت شغلی و ماموریت‌ها
+            </label>
+            <textarea
+              rows={2}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="شرح انتظارات و وظایف اصلی موقعیت..."
+              className="w-full px-3 py-2 text-xs bg-surface-2 border border-border-default rounded-[10px] text-text-1 focus:bg-surface-1 focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+            />
+          </div>
+
+          {/* Evaluation criteria & weights */}
+          <div className="bg-surface-2 p-4 rounded-[12px] border border-border-default">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-bold text-text-1 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-brand" />
+                <span>شاخص‌های وزنی ارزیابی هوش مصنوعی (مجموع وزن‌ها ۱۰۰٪):</span>
+              </span>
+
+              <button
+                type="button"
+                onClick={handleAddCriterion}
+                className="text-[11px] font-bold text-brand hover:underline flex items-center gap-1 cursor-pointer"
+              >
+                <Plus className="w-3 h-3" />
+                <span>افزودن معیار</span>
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {criteriaList.map((crit, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={crit.title}
+                    onChange={(e) => handleUpdateCriterion(idx, 'title', e.target.value)}
+                    className="flex-1 px-3 py-1.5 text-xs bg-surface-1 border border-border-default rounded-[8px] text-text-1 focus:outline-none focus:ring-1 focus:ring-brand"
+                  />
+                  <div className="flex items-center gap-1">
+                    <span className="text-[11px] text-text-3 font-medium">وزن:</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={crit.weight}
+                      onChange={(e) =>
+                        handleUpdateCriterion(idx, 'weight', parseInt(e.target.value, 10) || 10)
+                      }
+                      className="w-14 px-2 py-1 text-xs bg-surface-1 border border-border-default rounded-[8px] text-center font-bold text-brand"
+                    />
+                    <span className="text-[11px] text-text-3">٪</span>
+                  </div>
+                  {criteriaList.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCriterion(idx)}
+                      className="p-1 text-text-3 hover:text-danger cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="pt-3 border-t border-border-default flex items-center justify-end gap-2.5">
+            <button
+              type="button"
+              onClick={() => setIsCreateModalOpen(false)}
+              className="px-4 py-2 text-xs font-semibold text-text-2 hover:bg-surface-2 rounded-[10px] transition-colors cursor-pointer"
+            >
+              انصراف
+            </button>
+            <button
+              type="submit"
+              className="px-5 py-2 text-xs font-bold bg-brand hover:bg-brand-hover text-white rounded-[10px] shadow-2xs transition-colors cursor-pointer"
+            >
+              ثبت و فعال‌سازی آگهی
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 };

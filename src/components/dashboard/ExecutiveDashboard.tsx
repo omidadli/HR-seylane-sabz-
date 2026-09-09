@@ -1,20 +1,16 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   Users,
   Briefcase,
   Clock,
-  Wallet,
-  TrendingUp,
+  TrendingDown,
   Sparkles,
-  ArrowUpRight,
-  CheckCircle2,
   Calendar,
   AlertTriangle,
   Building2,
   Bot,
   UserPlus,
   Mic,
-  SlidersHorizontal,
   ChevronLeft,
   GraduationCap,
   CheckSquare,
@@ -22,10 +18,22 @@ import {
   Factory,
   Activity,
   FileCheck2,
-  UserCheck,
-  ShieldCheck,
+  Wallet,
+  TrendingUp,
+  SlidersHorizontal,
+  CheckCircle2,
 } from 'lucide-react';
-import { motion } from 'motion/react';
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+} from 'recharts';
 import {
   HRDashboardMetrics,
   HoldingDepartment,
@@ -40,12 +48,15 @@ import {
   TrainingCourse,
   PerformanceGoal,
 } from '../../types';
-import { toPersianDigits, getTodayJalali, formatJalaliDate, formatJalaliDateReadable } from '../../utils/jalali';
+import { toPersianDigits, getTodayJalali, formatJalaliDateReadable, formatToman } from '../../utils/jalali';
 import { ModuleKey } from '../common/Sidebar';
+import { Card } from '../ui/Card';
+import { EmptyState } from '../ui/EmptyState';
+import { Skeleton, SkeletonCard } from '../ui/Skeleton';
 
 interface ExecutiveDashboardProps {
   currentRole: UserRole;
-  metrics: HRDashboardMetrics;
+  metrics?: HRDashboardMetrics;
   departments: HoldingDepartment[];
   jobs: JobPosting[];
   candidates: Candidate[];
@@ -56,11 +67,86 @@ interface ExecutiveDashboardProps {
   checklists?: ChecklistItem[];
   trainingCourses?: TrainingCourse[];
   performanceGoals?: PerformanceGoal[];
+  isLoading?: boolean;
   onNavigate: (module: ModuleKey) => void;
   onOpenVoiceAssistant: () => void;
   onOpenJobGenerator: () => void;
   onOpenCommandPalette: () => void;
 }
+
+// Lightweight, crisp SVG sparkline for KPI cards
+const MiniSparkline: React.FC<{
+  data: number[];
+  color?: string;
+  height?: number;
+}> = ({ data, color = '#059669', height = 28 }) => {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const width = 76;
+  const padding = 2;
+  const points = data
+    .map((val, idx) => {
+      const x = padding + (idx / (data.length - 1)) * (width - padding * 2);
+      const y = height - padding - ((val - min) / range) * (height - padding * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+
+  const pointsArr = points.split(' ');
+  const firstPoint = pointsArr[0];
+  const lastPoint = pointsArr[pointsArr.length - 1];
+  const lastX = lastPoint.split(',')[0];
+  const firstX = firstPoint.split(',')[0];
+  const areaPoints = `${points} ${lastX},${height} ${firstX},${height}`;
+  const gradId = `sparkline-grad-${color.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+  return (
+    <svg width={width} height={height} className="overflow-visible opacity-90 shrink-0" aria-hidden="true">
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.3" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.0" />
+        </linearGradient>
+      </defs>
+      <polygon points={areaPoints} fill={`url(#${gradId})`} />
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={points}
+      />
+    </svg>
+  );
+};
+
+// Recharts Custom Tooltip styled for both themes
+const CustomChartTooltip = ({ active, payload, label }: any) => {
+  if (active && payload && payload.length) {
+    return (
+      <div className="bg-surface-1/95 backdrop-blur-md p-3 rounded-[10px] border border-border-default shadow-xl text-right text-xs">
+        <p className="font-black text-text-1 mb-2 pb-1 border-b border-border-default">
+          {label}
+        </p>
+        {payload.map((entry: any, index: number) => (
+          <div key={`item-${index}`} className="flex items-center justify-between gap-4 text-[11px] py-0.5">
+            <span className="flex items-center gap-1.5 text-text-2">
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
+              <span className="font-semibold">{entry.name}:</span>
+            </span>
+            <span className="font-black text-text-1">
+              {toPersianDigits(entry.value)}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return null;
+};
 
 export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
   currentRole,
@@ -75,6 +161,7 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
   checklists = [],
   trainingCourses = [],
   performanceGoals = [],
+  isLoading = false,
   onNavigate,
   onOpenVoiceAssistant,
   onOpenJobGenerator,
@@ -82,14 +169,33 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
 }) => {
   const today = getTodayJalali();
   const formattedDate = formatJalaliDateReadable(today);
-  const todayJalaliStr = formatJalaliDate(today, true);
+  const todayJalaliStr = `${today.year}/${String(today.month).padStart(2, '0')}/${String(today.day).padStart(2, '0')}`;
+
+  // Time-of-day personalized greeting
+  const currentHour = new Date().getHours();
+  const greetingTime =
+    currentHour >= 5 && currentHour < 12
+      ? 'صبح بخیر'
+      : currentHour >= 12 && currentHour < 17
+      ? 'ظهر بخیر'
+      : currentHour >= 17 && currentHour < 21
+      ? 'عصر بخیر'
+      : 'شب بخیر';
+
+  const roleTitle =
+    currentRole === UserRole.HR_DIRECTOR
+      ? 'مدیر منابع انسانی'
+      : currentRole === UserRole.DEPT_MANAGER
+      ? 'مدیر دپارتمان'
+      : 'کارمند';
 
   // 1. Headcount & Workforce metrics
   const activeEmployees = employees.filter((e) => e.status === 'ACTIVE');
-  const activeHeadcount = activeEmployees.length > 0 ? activeEmployees.length : metrics.activeHeadcount;
-  const eshtehardStaffCount = employees.filter(
-    (e) => e.department?.includes('تولید') || e.department?.includes('اشتهارد') || e.department?.includes('لجستیک')
-  ).length || Math.round(activeHeadcount * 0.58);
+  const activeHeadcount = activeEmployees.length > 0 ? activeEmployees.length : metrics?.activeHeadcount ?? 850;
+  const eshtehardStaffCount =
+    employees.filter(
+      (e) => e.department?.includes('تولید') || e.department?.includes('اشتهارد') || e.department?.includes('لجستیک')
+    ).length || Math.round(activeHeadcount * 0.58);
   const hqStaffCount = Math.max(0, activeHeadcount - eshtehardStaffCount);
 
   // 2. Attendance metrics
@@ -100,9 +206,6 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
     activeHeadcount > 0 && presentToday > 0
       ? Math.round((presentToday / activeHeadcount) * 1000) / 10
       : 96.4;
-  const delayedTodayCount = attendances.filter(
-    (a) => a.dateJalali === todayJalaliStr && a.delayMinutes && a.delayMinutes > 0
-  ).length;
 
   // 3. Leaves & Requests metrics
   const pendingLeaves = leaveRequests.filter(
@@ -112,7 +215,7 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
       (r.status as string)?.includes('PENDING')
   );
   const pendingLeavesCount =
-    pendingLeaves.length > 0 ? pendingLeaves.length : (metrics.pendingLeavesCount ?? 7);
+    pendingLeaves.length > 0 ? pendingLeaves.length : (metrics?.pendingLeavesCount ?? 7);
   const onLeaveTodayCount =
     leaveRequests.filter(
       (r) =>
@@ -122,644 +225,666 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
     ).length || 14;
 
   // 4. Recruitment & Pipeline metrics
-  const activeJobsCount = jobs.filter((j) => j.status === 'ACTIVE').length || metrics.openPositionsCount || 6;
+  const activeJobsCount = jobs.filter((j) => j.status === 'ACTIVE').length || metrics?.openPositionsCount || 6;
   const totalResumes = jobs.reduce((acc, j) => acc + (j.applicationsCount || 0), 0) || candidates.length || 54;
   const priorityCandidatesCount =
     candidates.filter((c) => c.category === 'INTERVIEW_PRIORITY').length || 8;
 
-  // 5. Onboarding & Checklists metrics
-  const pendingChecklists = checklists.filter((c) => !c.isCompleted);
-  const completedChecklists = checklists.filter((c) => c.isCompleted);
-  const inProgressChecklistsCount =
-    pendingChecklists.length > 0 ? pendingChecklists.length : 12;
-  const checklistCompletionRate =
-    checklists.length > 0
-      ? Math.round((completedChecklists.length / checklists.length) * 100)
-      : 76;
-
-  // 6. Payroll metrics
+  // 5. Payroll metrics (role-sensitive)
   const isHR = currentRole === UserRole.HR_DIRECTOR;
-  const payrollTotal = metrics.monthlyPayrollTotalToman;
-  const finalizedSlipsCount =
-    payrollSlips.filter((p) => p.status === 'FINALIZED' || p.status === 'PAID').length || activeHeadcount;
+  const payrollTotal = metrics?.monthlyPayrollTotalToman;
+  const draftSlips = payrollSlips.filter((p) => p.status === 'DRAFT');
 
-  // 7. Training & Development metrics
-  const activeCourses =
-    trainingCourses.filter((c) => c.status === 'IN_PROGRESS' || c.status === 'UPCOMING').length || 5;
-  const totalParticipants =
-    trainingCourses.reduce((acc, c) => acc + (c.participantsCount || 0), 0) || 165;
+  // 6. Onboarding & Expiring Checklists
+  const pendingChecklists = checklists.filter((c) => !c.isCompleted);
 
-  // 8. Performance & Goals metrics
-  const activeGoalsCount =
-    performanceGoals.filter((g) => g.currentProgress < 100).length || 28;
-  const avgGoalProgress =
-    performanceGoals.length > 0
-      ? Math.round(
-          performanceGoals.reduce((acc, g) => acc + (g.currentProgress || 0), 0) /
-            performanceGoals.length
-        )
-      : 74;
+  // Total items needing attention
+  const totalActionItems =
+    pendingLeaves.length +
+    (isHR && draftSlips.length > 0 ? 1 : 0) +
+    pendingChecklists.length;
+
+  // Chart Data 1: Department Workforce Distribution
+  const departmentChartData = useMemo(() => {
+    if (employees.length > 0) {
+      const counts: Record<string, number> = {};
+      employees.forEach((emp) => {
+        const dept = emp.department || 'سایر واحدها';
+        counts[dept] = (counts[dept] || 0) + 1;
+      });
+      return Object.entries(counts)
+        .slice(0, 5)
+        .map(([name, count]) => ({
+          name: name.length > 16 ? `${name.substring(0, 14)}...` : name,
+          fullName: name,
+          count,
+        }));
+    }
+    if (departments.length > 0) {
+      return departments.slice(0, 5).map((d) => ({
+        name: d.name.length > 16 ? `${d.name.substring(0, 14)}...` : d.name,
+        fullName: d.name,
+        count: d.headcount || 0,
+      }));
+    }
+    return [
+      { name: 'تولید اشتهارد', fullName: 'خطوط تولید کارخانجات اشتهارد', count: Math.round(activeHeadcount * 0.42) },
+      { name: 'R&D و آزمایشگاه', fullName: 'فرمولاسیون و تحقیق و توسعه', count: Math.round(activeHeadcount * 0.16) },
+      { name: 'بازاریابی و برندها', fullName: 'مارکتینگ دافی، کامان و میس‌ویک', count: Math.round(activeHeadcount * 0.18) },
+      { name: 'فروش و لجستیک', fullName: 'توزیع مویرگی و انبارداری', count: Math.round(activeHeadcount * 0.14) },
+      { name: 'مالی و منابع انسانی', fullName: 'اداری، حقوقی و سرمایه انسانی', count: Math.round(activeHeadcount * 0.10) },
+    ];
+  }, [employees, departments, activeHeadcount]);
+
+  // Chart Data 2: Weekly Attendance & Shift Trend
+  const attendanceTrendData = useMemo(() => {
+    const days = ['شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنج‌شنبه'];
+    const basePresent = activeHeadcount > 0 ? Math.round(activeHeadcount * 0.95) : 810;
+    return days.map((day, i) => {
+      const factor = [0.94, 0.96, 0.97, 0.95, 0.93, 0.89][i];
+      const present = Math.round(basePresent * factor);
+      const delayed = Math.round(activeHeadcount * (0.015 + (i % 3) * 0.008));
+      return {
+        day,
+        'حاضر': present,
+        'تأخیر': delayed,
+      };
+    });
+  }, [activeHeadcount]);
+
+  // SKELETON LOADER STATE
+  if (isLoading || !metrics) {
+    return (
+      <div dir="rtl" className="space-y-6 pb-12 animate-pulse">
+        {/* Skeleton Greeting Banner */}
+        <div className="p-6 rounded-[14px] bg-surface-1 border border-border-default space-y-3">
+          <Skeleton className="w-48 h-5" />
+          <Skeleton className="w-80 h-7" />
+          <Skeleton className="w-full max-w-xl h-4" />
+        </div>
+
+        {/* 4 Skeleton KPI Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+          <SkeletonCard />
+        </div>
+
+        {/* Skeleton Charts */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="p-5 rounded-[14px] bg-surface-1 border border-border-default space-y-4">
+            <Skeleton className="w-40 h-5" />
+            <Skeleton className="w-full h-64" />
+          </div>
+          <div className="p-5 rounded-[14px] bg-surface-1 border border-border-default space-y-4">
+            <Skeleton className="w-40 h-5" />
+            <Skeleton className="w-full h-64" />
+          </div>
+        </div>
+
+        {/* Skeleton Needs Attention Panel */}
+        <div className="p-5 rounded-[14px] bg-surface-1 border border-border-default space-y-3">
+          <Skeleton className="w-48 h-5" />
+          <Skeleton className="w-full h-14" />
+          <Skeleton className="w-full h-14" />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-6 pb-12 animate-fadeIn">
-      {/* 1. Welcome & Holding Pulse Hero Banner */}
-      <div className="relative overflow-hidden rounded-3xl bg-gradient-to-l from-emerald-900 via-emerald-800 to-teal-900 text-white p-6 sm:p-8 shadow-xl border border-emerald-700/50">
-        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-          <div className="space-y-2 max-w-2xl">
-            <div className="flex items-center gap-2">
-              <span className="px-3 py-1 rounded-full bg-white/10 backdrop-blur-md border border-white/20 text-xs font-bold text-emerald-200">
-                هلدینگ تولیدی بازرگانی سیلانه سبز
+    <div dir="rtl" className="space-y-6 pb-12">
+      {/* 1. Personalized Greeting Row */}
+      <div className="relative overflow-hidden rounded-[14px] bg-surface-1 border border-border-default p-4 sm:p-6 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+          <div className="space-y-2 max-w-2xl text-right">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-[6px] bg-brand-soft border border-brand/20 text-xs font-black text-brand">
+                هلدینگ سیلانه سبز
               </span>
-              <span className="text-xs text-emerald-300 font-medium flex items-center gap-1">
+              <span className="text-xs text-text-3 font-medium flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5" />
                 <span>{formattedDate}</span>
               </span>
             </div>
-            <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight text-white">
-              پیشخوان مدیریت جامع سرمایه‌های انسانی
-            </h2>
-            <p className="text-sm text-emerald-100/90 leading-relaxed font-medium">
-              سامانه هوشمند پایش فرآیندهای پرسنلی، غربالگری چندبعدی متقاضیان، حضور و غیاب کارخانجات اشتهارد و صدور احکام برای برندهای دافی، کامان، میس‌ویک و کاپوت.
+
+            <h1 className="text-xl sm:text-2xl font-black tracking-tight text-text-1">
+              {greetingTime}، {roleTitle}
+            </h1>
+
+            <p className="text-[13px] text-text-2 leading-relaxed font-medium">
+              داشبورد وضعیت منابع انسانی کارخانجات اشتهارد و برندهای دافی، کامان، میس‌ویک و کاپوت.
             </p>
           </div>
 
-          {/* Quick Hero Actions */}
-          <div className="flex flex-wrap items-center gap-3 shrink-0">
+          {/* Quick Action Shortcuts */}
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
             <button
               type="button"
               onClick={() => onNavigate('ai-governance')}
-              className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 font-bold text-xs backdrop-blur-md border border-emerald-400/40 transition-all cursor-pointer"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-[10px] bg-brand-soft hover:bg-brand/20 text-brand font-bold text-xs border border-brand/25 transition-all cursor-pointer shadow-2xs"
             >
-              <Bot className="w-4 h-4 text-emerald-300" />
-              <span>مدیریت هوش مصنوعی (Gemini)</span>
+              <Bot className="w-4 h-4" />
+              <span>مدیریت دستیار</span>
             </button>
 
             <button
               type="button"
               onClick={onOpenVoiceAssistant}
-              className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs shadow-lg transition-all transform active:scale-95 cursor-pointer"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-[10px] bg-brand hover:bg-brand-hover text-white font-bold text-xs shadow-xs transition-all cursor-pointer"
             >
               <Mic className="w-4 h-4" />
-              <span>دستیار صوتی AI</span>
+              <span>دستیار صوتی</span>
             </button>
 
             <button
               type="button"
               onClick={onOpenJobGenerator}
-              className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs backdrop-blur-md border border-white/20 transition-all cursor-pointer"
+              className="flex items-center gap-2 px-3.5 py-2 rounded-[10px] bg-surface-2 hover:bg-surface-3 text-text-1 font-bold text-xs border border-border-default transition-all cursor-pointer"
             >
-              <Sparkles className="w-4 h-4 text-emerald-300" />
-              <span>ایجاد آگهی استخدامی</span>
+              <Sparkles className="w-4 h-4 text-brand" />
+              <span>ایجاد آگهی شغلی</span>
             </button>
 
             <button
               type="button"
               onClick={onOpenCommandPalette}
-              className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-slate-900/60 hover:bg-slate-900 text-emerald-200 font-bold text-xs backdrop-blur-md border border-emerald-500/30 transition-all cursor-pointer"
-              title="کلید میانبر Ctrl + K"
+              className="flex items-center gap-2 px-3 py-2 rounded-[10px] bg-surface-2 hover:bg-surface-3 text-text-2 hover:text-text-1 font-bold text-xs border border-border-default transition-all cursor-pointer"
+              title="جستجو در سامانه"
             >
-              <span>جستجوی سریع</span>
-              <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-white/15 text-white">⌘K</kbd>
+              <span>جستجو</span>
+              <kbd className="text-[10px] px-1.5 py-0.5 rounded-[4px] bg-surface-1 border border-border-default text-text-2 font-mono">
+                ⌘K
+              </kbd>
             </button>
           </div>
         </div>
-
-        {/* Decorative background glows */}
-        <div className="absolute -left-20 -bottom-20 w-80 h-80 rounded-full bg-teal-500/15 blur-3xl pointer-events-none" />
-        <div className="absolute right-10 -top-20 w-60 h-60 rounded-full bg-emerald-400/10 blur-2xl pointer-events-none" />
       </div>
 
-      {/* 2. Daily HR Operational Summary (خلاصه وضعیت روزانه منابع انسانی) */}
-      <div className="space-y-3.5">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 px-1">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-emerald-600/10 border border-emerald-600/20 text-emerald-700 flex items-center justify-center shrink-0">
-              <Activity className="w-4 h-4" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm sm:text-base font-extrabold text-slate-900 tracking-tight">
-                  خلاصه وضعیت روزانه منابع انسانی
-                </h3>
-                <span className="inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                  پایش زنده امروز
-                </span>
+      {/* 2. Up to 4 KPI Stat Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* KPI 1: Headcount */}
+        <Card
+          hoverable
+          onClick={() => onNavigate('employees')}
+          className="p-4 sm:p-5 flex flex-col justify-between"
+        >
+          <div>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <span className="text-xs font-bold text-text-2">کارکنان فعال</span>
+              <div className="w-10 h-10 rounded-[10px] bg-brand-soft text-brand flex items-center justify-center border border-brand/20 shrink-0">
+                <Users className="w-5 h-5" />
               </div>
-              <p className="text-[11px] text-slate-500 font-medium">
-                گردش کار، تردد، جذب، درخواست‌ها و شاخص‌های حیاتی پرسنل هلدینگ در یک نگاه
-              </p>
-            </div>
-          </div>
-          <span className="text-[11px] font-bold text-slate-600 bg-white px-3 py-1 rounded-xl border border-slate-200/80 shadow-2xs self-start sm:self-auto">
-            {formattedDate}
-          </span>
-        </div>
-
-        {/* 8-Card Structured Daily Status Bento Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          {/* Card 1: Headcount & Active Workforce */}
-          <div
-            onClick={() => onNavigate('employees')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-emerald-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-emerald-50 text-emerald-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <Users className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">پرسنل فعال هلدینگ</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-100">
-                  پرونده‌ها
-                </span>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(activeHeadcount)}
-                </span>
-                <span className="text-xs font-bold text-slate-500">نفر همکار</span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                {toPersianDigits(eshtehardStaffCount)} نفر کارخانجات اشتهارد • {toPersianDigits(hqStaffCount)} نفر دفتر مرکزی
-              </p>
             </div>
 
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-emerald-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>مدیریت پرونده‌های پرسنلی</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">
+                {toPersianDigits(activeHeadcount)}
               </span>
-              <span className="text-[10px] text-slate-400 font-bold">۱۰۰٪ پایدار</span>
+              <span className="text-xs font-bold text-text-3">نفر</span>
             </div>
+
+            <p className="text-[13px] text-text-3 font-medium mt-1.5 leading-relaxed">
+              {toPersianDigits(eshtehardStaffCount)} نفر کارخانجات اشتهارد • {toPersianDigits(hqStaffCount)} نفر دفتر مرکزی
+            </p>
           </div>
 
-          {/* Card 2: Live Daily Attendance */}
-          <div
-            onClick={() => onNavigate('attendance')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-sky-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-sky-50 text-sky-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <Clock className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">حضور و غیاب امروز</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-sky-50 text-sky-800 border border-sky-100">
-                  شیفت روز
-                </span>
+          <div className="pt-3 mt-3 border-t border-border-default flex items-center justify-between">
+            <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center gap-1">
+              <span>▲</span>
+              <span>۱.۴٪ نسبت به ماه قبل</span>
+            </span>
+            <MiniSparkline data={[780, 792, 805, 814, 822, 835, activeHeadcount]} color="#059669" />
+          </div>
+        </Card>
+
+        {/* KPI 2: Open Positions */}
+        <Card
+          hoverable
+          onClick={() => onNavigate('recruitment')}
+          className="p-4 sm:p-5 flex flex-col justify-between"
+        >
+          <div>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <span className="text-xs font-bold text-text-2">آگهی‌های شغلی فعال</span>
+              <div className="w-10 h-10 rounded-[10px] bg-info-soft text-info flex items-center justify-center border border-info/20 shrink-0">
+                <Briefcase className="w-5 h-5" />
               </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(attendanceRatePct)}٪
-                </span>
-                <span className="text-xs font-bold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded-md">
-                  نرخ حضور
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                {toPersianDigits(presentToday || Math.round(activeHeadcount * 0.96))} ثبت ورود قطعی • {toPersianDigits(delayedTodayCount || 5)} تاخیر مجاز
-              </p>
             </div>
 
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-sky-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>دستگاه‌های حضور و غیاب</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">
+                {toPersianDigits(activeJobsCount)}
               </span>
-              <span className="text-[10px] text-emerald-600 font-bold">آنلاین</span>
+              <span className="text-xs font-bold text-text-3">موقعیت</span>
             </div>
+
+            <p className="text-[13px] text-text-3 font-medium mt-1.5 leading-relaxed">
+              {toPersianDigits(totalResumes)} رزومه • {toPersianDigits(priorityCandidatesCount)} در اولویت مصاحبه
+            </p>
           </div>
 
-          {/* Card 3: Pending Leaves & Mission Requests */}
-          <div
-            onClick={() => onNavigate('attendance')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-amber-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-amber-50 text-amber-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <Calendar className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">مرخصی‌ها و ماموریت‌ها</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-100">
-                  اقدام فوری
-                </span>
+          <div className="pt-3 mt-3 border-t border-border-default flex items-center justify-between">
+            <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 border border-blue-500/20 flex items-center gap-1">
+              <span>▲</span>
+              <span>۲ موقعیت جدید</span>
+            </span>
+            <MiniSparkline data={[3, 4, 4, 5, 5, 6, activeJobsCount]} color="#0284c7" />
+          </div>
+        </Card>
+
+        {/* KPI 3: Pending Leaves */}
+        <Card
+          hoverable
+          onClick={() => onNavigate('attendance')}
+          className="p-4 sm:p-5 flex flex-col justify-between"
+        >
+          <div>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <span className="text-xs font-bold text-text-2">درخواست‌های مرخصی</span>
+              <div className="w-10 h-10 rounded-[10px] bg-warning-soft text-warning flex items-center justify-center border border-warning/20 shrink-0">
+                <Clock className="w-5 h-5" />
               </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(pendingLeavesCount)}
-                </span>
-                <span className="text-xs font-bold text-amber-800 bg-amber-50 px-1.5 py-0.5 rounded-md">
-                  در انتظار تایید
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                {toPersianDigits(onLeaveTodayCount)} نفر در مرخصی امروز (استحقاقی و استعلاجی)
-              </p>
             </div>
 
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-amber-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>کارتابل درخواست‌های مرخصی</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
+            <div className="flex items-baseline gap-1.5 mt-1">
+              <span className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">
+                {toPersianDigits(pendingLeavesCount)}
               </span>
-              <span className="text-[10px] text-slate-400 font-bold">بررسی روزانه</span>
+              <span className="text-xs font-bold text-text-3">درخواست</span>
             </div>
+
+            <p className="text-[13px] text-text-3 font-medium mt-1.5 leading-relaxed">
+              {toPersianDigits(onLeaveTodayCount)} نفر در مرخصی امروز
+            </p>
           </div>
 
-          {/* Card 4: Recruitment & Candidate Sourcing */}
-          <div
-            onClick={() => onNavigate('recruitment')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-indigo-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <Briefcase className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">جذب و استخدام فعال</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-800 border border-indigo-100">
-                  غربالگری AI
-                </span>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(activeJobsCount)}
-                </span>
-                <span className="text-xs font-bold text-indigo-700 bg-indigo-50 px-1.5 py-0.5 rounded-md">
-                  موقعیت فعال
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                {toPersianDigits(totalResumes)} رزومه دریافتی • {toPersianDigits(priorityCandidatesCount)} کارجو در اولویت مصاحبه
-              </p>
-            </div>
+          <div className="pt-3 mt-3 border-t border-border-default flex items-center justify-between">
+            <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 border border-amber-500/20 flex items-center gap-1">
+              <span>▼</span>
+              <span>۳ مورد نسبت به دیروز</span>
+            </span>
+            <MiniSparkline data={[12, 10, 9, 11, 8, 7, pendingLeavesCount]} color="#d97706" />
+          </div>
+        </Card>
 
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-indigo-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>مشاهده کانبان استخدام</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
+        {/* KPI 4: Turnover / Confidential Payroll */}
+        <Card
+          hoverable
+          onClick={() => onNavigate(isHR ? 'payroll' : 'analytics')}
+          className="p-4 sm:p-5 flex flex-col justify-between"
+        >
+          <div>
+            <div className="flex items-start justify-between gap-3 mb-2">
+              <span className="text-xs font-bold text-text-2">
+                {isHR ? 'حقوق و دستمزد ماهانه (تومان)' : 'نرخ خروج کارکنان'}
               </span>
-              <span className="text-[10px] text-indigo-600 font-bold">هوش مصنوعی</span>
-            </div>
-          </div>
-
-          {/* Card 5: Onboarding & Checklists */}
-          <div
-            onClick={() => onNavigate('checklists')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-teal-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-teal-50 text-teal-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <CheckSquare className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">ان‌بوردینگ و چک‌لیست‌ها</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-teal-50 text-teal-800 border border-teal-100">
-                  ورود همکاران
-                </span>
+              <div className="w-10 h-10 rounded-[10px] bg-brand-soft text-brand flex items-center justify-center border border-brand/20 shrink-0">
+                {isHR ? <Wallet className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
               </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(inProgressChecklistsCount)}
-                </span>
-                <span className="text-xs font-bold text-teal-700 bg-teal-50 px-1.5 py-0.5 rounded-md">
-                  مورد در جریان
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                تحویل تجهیزات و ان‌بوردینگ با نرخ پیشرفت {toPersianDigits(checklistCompletionRate)}٪ در واحدهای عملیاتی
-              </p>
             </div>
 
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-teal-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>پیگیری مراحل ان‌بوردینگ</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </span>
-              <span className="text-[10px] text-slate-400 font-bold">بدو خدمت</span>
-            </div>
-          </div>
-
-          {/* Card 6: Payroll & Compensation */}
-          <div
-            onClick={() => isHR && onNavigate('payroll')}
-            className={`bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-emerald-300 transition-all flex flex-col justify-between space-y-3 ${
-              isHR ? 'cursor-pointer group' : ''
-            }`}
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-emerald-50 text-emerald-800 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <Wallet className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">حقوق و دستمزد ماه</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-100">
-                  {isHR ? 'محاسبه شده' : 'محرمانه'}
-                </span>
-              </div>
+            <div className="flex items-baseline gap-1.5 mt-1">
               {isHR ? (
-                <>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                      {typeof payrollTotal === 'number' && payrollTotal > 0
-                        ? toPersianDigits((payrollTotal / 1_000_000_000).toFixed(2))
-                        : toPersianDigits(42.5)}
+                typeof payrollTotal === 'number' && payrollTotal > 0 ? (
+                  <>
+                    <span className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">
+                      {toPersianDigits((payrollTotal / 1_000_000_000).toFixed(2))}
                     </span>
-                    <span className="text-xs font-bold text-emerald-800 bg-emerald-50 px-1.5 py-0.5 rounded-md">
-                      میلیارد تومان
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                    {toPersianDigits(finalizedSlipsCount)} فیش حقوقی صادرشده • محاسبه بیمه ۷٪ و مالیات
-                  </p>
-                </>
+                    <span className="text-xs font-bold text-text-3">میلیارد</span>
+                  </>
+                ) : (
+                  <span className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">—</span>
+                )
               ) : (
                 <>
-                  <div className="flex items-baseline gap-1.5">
-                    <span className="text-xl font-extrabold text-slate-500">فیش شخصی</span>
-                  </div>
-                  <p className="text-[11px] text-slate-400 font-medium mt-1.5 leading-relaxed">
-                    داده‌های کلان مالی صرفاً در دسترس مدیریت ارشد منابع انسانی است.
-                  </p>
+                  <span className="text-2xl sm:text-3xl font-black text-text-1 tracking-tight">
+                    {metrics.turnoverRatePct != null ? `${toPersianDigits(metrics.turnoverRatePct)}٪` : '—'}
+                  </span>
+                  <span className="text-xs font-bold text-text-3">سالانه</span>
                 </>
               )}
             </div>
 
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-emerald-800 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>{isHR ? 'احکام و صدور فیش‌ها' : 'مشاهده در پورتال پرسنلی'}</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </span>
-              <span className="text-[10px] text-slate-400 font-bold">قانون کار ۱۴۰۵</span>
-            </div>
+            <p className="text-[13px] text-text-3 font-medium mt-1.5 leading-relaxed">
+              {isHR
+                ? 'محاسبه بیمه ۷٪ تأمین اجتماعی و مالیات پله‌ای'
+                : '۲.۱٪ کمتر از میانگین صنعت آرایشی-بهداشتی'}
+            </p>
           </div>
 
-          {/* Card 7: Training & Development */}
-          <div
-            onClick={() => onNavigate('training')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-violet-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-violet-50 text-violet-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <GraduationCap className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">آموزش و توانمندسازی</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-violet-50 text-violet-800 border border-violet-100">
-                  مهارت‌ها
-                </span>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(activeCourses)}
-                </span>
-                <span className="text-xs font-bold text-violet-700 bg-violet-50 px-1.5 py-0.5 rounded-md">
-                  دوره فعال
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                {toPersianDigits(totalParticipants)} فراگیر در دوره‌های GMP، ایمنی کارخانه و مهارت‌های نرم
-              </p>
-            </div>
-
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-violet-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>تقویم آموزشی سازمان</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </span>
-              <span className="text-[10px] text-slate-400 font-bold">ماتریس مهارت</span>
-            </div>
+          <div className="pt-3 mt-3 border-t border-border-default flex items-center justify-between">
+            <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 border border-emerald-500/20 flex items-center gap-1">
+              <span>▼</span>
+              <span>۰.۳٪ کاهش خروج</span>
+            </span>
+            <MiniSparkline
+              data={[2.4, 2.3, 2.1, 2.0, 1.9, 1.8, metrics.turnoverRatePct || 1.8]}
+              color="#059669"
+            />
           </div>
-
-          {/* Card 8: Performance & OKRs */}
-          <div
-            onClick={() => onNavigate('performance')}
-            className="bg-white rounded-3xl p-4 sm:p-5 border border-slate-200/80 shadow-xs hover:shadow-md hover:border-rose-300 transition-all cursor-pointer group flex flex-col justify-between space-y-3"
-          >
-            <div>
-              <div className="flex items-center justify-between mb-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-2xl bg-rose-50 text-rose-700 flex items-center justify-center group-hover:scale-105 transition-transform">
-                    <TrendingUp className="w-4.5 h-4.5" />
-                  </div>
-                  <span className="text-xs font-bold text-slate-600">اهداف و عملکرد (OKR)</span>
-                </div>
-                <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-50 text-rose-800 border border-rose-100">
-                  فصلی
-                </span>
-              </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="text-2xl sm:text-3xl font-black text-slate-900">
-                  {toPersianDigits(activeGoalsCount)}
-                </span>
-                <span className="text-xs font-bold text-rose-700 bg-rose-50 px-1.5 py-0.5 rounded-md">
-                  هدف فعال
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-medium mt-1.5 leading-relaxed">
-                میانگین تحقق {toPersianDigits(avgGoalProgress)}٪ • ارزیابی ۳۶۰ درجه مدیران و پرسنل
-              </p>
-            </div>
-
-            <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between text-[11px]">
-              <span className="text-rose-700 font-extrabold flex items-center gap-1 group-hover:underline">
-                <span>مدیریت اهداف و تارگت‌ها</span>
-                <ChevronLeft className="w-3.5 h-3.5" />
-              </span>
-              <span className="text-[10px] text-slate-400 font-bold">دوره جاری</span>
-            </div>
-          </div>
-        </div>
+        </Card>
       </div>
 
-      {/* 3. Smart AI Feed & Actionable Insights */}
-      <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white rounded-3xl p-6 shadow-xl border border-slate-700/60 relative overflow-hidden">
-        <div className="flex items-center justify-between gap-4 mb-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center">
-              <Bot className="w-4 h-4" />
-            </div>
+      {/* 3. Responsive Grid of Chart Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Chart Card 1: Department Workforce Distribution */}
+        <Card className="p-4 sm:p-5 flex flex-col justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
             <div>
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <span>پیشنهادات و تحلیل هوشمند روزانه (Gemini HR Insights)</span>
-                <span className="text-[9px] font-black px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950">
-                  زنده
-                </span>
+              <h3 className="text-sm font-black text-text-1">
+                توزیع کارکنان در دپارتمان‌ها و برندها
               </h3>
-              <p className="text-[11px] text-slate-400 font-medium">
-                سیستم به‌صورت خودکار داده‌های کانبان، تردد و شاخص‌ها را تحلیل کرده و پیشنهادات زیر را ارائه می‌دهد:
-              </p>
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={onOpenCommandPalette}
-            className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-emerald-300 text-xs font-bold transition-all"
-          >
-            <span>جستجوی پیشرفته</span>
-            <ChevronLeft className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
-          {/* Insight 1 */}
-          <div className="bg-white/5 border border-white/10 hover:border-emerald-400/40 rounded-2xl p-4 transition-all hover:bg-white/10 flex flex-col justify-between">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-emerald-300 flex items-center gap-1">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>غربالگری رزومه‌ها</span>
-                </span>
-                <span className="text-[10px] text-slate-400">امروز</span>
-              </div>
-              <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                {toPersianDigits(priorityCandidatesCount || 4)} کارجو با نمره بالای ۸ و تطابق عالی با شاخصه‌های GMP و آرایشی-بهداشتی آماده مصاحبه نهایی هستند.
+              <p className="text-[13px] text-text-3 font-medium">
+                تعداد کارکنان در سایت‌های تولیدی و دفتر مرکزی
               </p>
             </div>
             <button
               type="button"
-              onClick={() => onNavigate('recruitment')}
-              className="mt-3 flex items-center justify-between text-xs font-bold text-emerald-400 hover:text-emerald-300 pt-2 border-t border-white/10 cursor-pointer"
+              onClick={() => onNavigate('employees')}
+              className="text-xs font-bold text-brand hover:underline flex items-center gap-1 self-start sm:self-auto cursor-pointer"
             >
-              <span>مشاهده کارجویان برتر در کانبان</span>
+              <span>مشاهده چارت</span>
               <ChevronLeft className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Insight 2 */}
-          <div className="bg-white/5 border border-white/10 hover:border-emerald-400/40 rounded-2xl p-4 transition-all hover:bg-white/10 flex flex-col justify-between">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-sky-300 flex items-center gap-1">
-                  <Factory className="w-3.5 h-3.5" />
-                  <span>تولید و خطوط اشتهارد</span>
-                </span>
-                <span className="text-[10px] text-slate-400">شیفت امروز</span>
-              </div>
-              <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                خط بسته‌بندی دافی با راندمان ۹۹٪ در حال فعالیت است. ۳ نفر از پرسنل شیفت شب درخواست جابجایی ثبت کرده‌اند.
+          <div className="h-64 w-full" dir="ltr">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={departmentChartData} margin={{ top: 10, right: 10, left: -20, bottom: 15 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-default)" opacity={0.6} vertical={false} />
+                <XAxis
+                  dataKey="name"
+                  stroke="#94a3b8"
+                  tick={{ fill: 'var(--color-text-3)', fontSize: 11 }}
+                  tickLine={false}
+                />
+                <YAxis
+                  stroke="#94a3b8"
+                  tick={{ fill: 'var(--color-text-3)', fontSize: 11 }}
+                  tickLine={false}
+                  tickFormatter={(v) => toPersianDigits(v)}
+                />
+                <Tooltip content={<CustomChartTooltip />} />
+                <Bar dataKey="count" name="کارکنان فعال" fill="#059669" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </Card>
+
+        {/* Chart Card 2: Weekly Attendance & Shift Trend */}
+        <Card className="p-4 sm:p-5 flex flex-col justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4">
+            <div>
+              <h3 className="text-sm font-black text-text-1">
+                روند تردد و شیفت‌های هفتگی
+              </h3>
+              <p className="text-[13px] text-text-3 font-medium">
+                تردد خطوط تولید دافی و کامان (میانگین حضور {toPersianDigits(attendanceRatePct)}٪)
               </p>
             </div>
             <button
               type="button"
               onClick={() => onNavigate('attendance')}
-              className="mt-3 flex items-center justify-between text-xs font-bold text-sky-400 hover:text-sky-300 pt-2 border-t border-white/10 cursor-pointer"
+              className="text-xs font-bold text-brand hover:underline flex items-center gap-1 self-start sm:self-auto cursor-pointer"
             >
-              <span>بررسی تردد و شیفت‌ها</span>
+              <span>گزارش‌های تردد</span>
               <ChevronLeft className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          {/* Insight 3 */}
-          <div className="bg-white/5 border border-white/10 hover:border-emerald-400/40 rounded-2xl p-4 transition-all hover:bg-white/10 flex flex-col justify-between">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-bold text-amber-300 flex items-center gap-1">
-                  <SlidersHorizontal className="w-3.5 h-3.5" />
-                  <span>شاخص‌ها و وزن‌دهی AI</span>
-                </span>
-                <span className="text-[10px] text-slate-400">به‌روزرسانی</span>
-              </div>
-              <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                معیارهای وتویی موقعیت‌های شیمیست R&D و بازاریابی دارویی بر اساس استاندارد ۱۴۰۳ بازتنظیم شده است.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => onNavigate('recruitment')}
-              className="mt-3 flex items-center justify-between text-xs font-bold text-amber-400 hover:text-amber-300 pt-2 border-t border-white/10 cursor-pointer"
-            >
-              <span>تنظیم ماتریس شاخص‌ها</span>
-              <ChevronLeft className="w-3.5 h-3.5" />
-            </button>
+          <div className="h-64 w-full" dir="ltr">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={attendanceTrendData} margin={{ top: 10, right: 10, left: -20, bottom: 15 }}>
+                <defs>
+                  <linearGradient id="areaColorPresent" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#059669" stopOpacity={0.35} />
+                    <stop offset="95%" stopColor="#059669" stopOpacity={0.0} />
+                  </linearGradient>
+                  <linearGradient id="areaColorDelayed" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#d97706" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#d97706" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--color-border-default)" opacity={0.6} vertical={false} />
+                <XAxis
+                  dataKey="day"
+                  stroke="#94a3b8"
+                  tick={{ fill: 'var(--color-text-3)', fontSize: 11 }}
+                  tickLine={false}
+                />
+                <YAxis
+                  stroke="#94a3b8"
+                  tick={{ fill: 'var(--color-text-3)', fontSize: 11 }}
+                  tickLine={false}
+                  tickFormatter={(v) => toPersianDigits(v)}
+                />
+                <Tooltip content={<CustomChartTooltip />} />
+                <Area
+                  type="monotone"
+                  dataKey="حاضر"
+                  stroke="#059669"
+                  strokeWidth={2.5}
+                  fillOpacity={1}
+                  fill="url(#areaColorPresent)"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="تأخیر"
+                  stroke="#d97706"
+                  strokeWidth={2}
+                  fillOpacity={1}
+                  fill="url(#areaColorDelayed)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           </div>
-        </div>
+        </Card>
       </div>
 
-      {/* 4. The 3-Click Navigation Grid: Access Any Module Instantly */}
+      {/* 4. "Needs Attention" Actionable Panel */}
+      <Card className="p-4 sm:p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-[10px] bg-warning-soft text-warning flex items-center justify-center border border-warning/20">
+              <AlertTriangle className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-text-1">
+                اقدامات نیازمند بررسی
+              </h3>
+              <p className="text-[13px] text-text-3 font-medium">
+                تأیید درخواست‌های مرخصی، فیش‌های حقوق و چک‌لیست‌ها
+              </p>
+            </div>
+          </div>
+
+          {totalActionItems > 0 && (
+            <span className="text-[11px] font-black px-2.5 py-1 rounded-[8px] bg-warning-soft text-warning border border-warning/20">
+              {toPersianDigits(totalActionItems)} مورد نیازمند بررسی
+            </span>
+          )}
+        </div>
+
+        {totalActionItems === 0 ? (
+          <EmptyState
+            title="موردی برای بررسی وجود ندارد"
+            description="تمام درخواست‌ها، ترددها و امور پرسنلی تأیید شده‌اند."
+            actionLabel="مشاهده ترددها"
+            onAction={() => onNavigate('attendance')}
+            className="py-8"
+          />
+        ) : (
+          <div className="divide-y divide-border-default/60">
+            {/* Action Item 1: Pending Leave Approvals */}
+            {pendingLeaves.slice(0, 3).map((leave) => (
+              <div
+                key={leave.id}
+                className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-surface-2/40 px-2 rounded-[10px] transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-amber-500/10 text-amber-600 flex items-center justify-center text-xs font-black shrink-0 border border-amber-500/20">
+                    <Clock className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-black text-text-1 flex items-center gap-2">
+                      <span>{leave.employeeName || 'کارمند'}</span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-[4px] bg-surface-2 text-text-3 border border-border-default">
+                        {leave.leaveType === 'ANNUAL'
+                          ? 'استحقاقی'
+                          : leave.leaveType === 'SICK'
+                          ? 'استعلاجی'
+                          : leave.leaveType === 'HOURLY'
+                          ? 'ساعتی'
+                          : 'مرخصی'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-text-3 font-medium mt-0.5">
+                      بازه زمانی: {toPersianDigits(leave.startDateJalali)} تا {toPersianDigits(leave.endDateJalali)} • {leave.reason || 'درخواست سیستمی'}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onNavigate('attendance')}
+                  className="px-3 py-1.5 rounded-[8px] bg-brand text-white hover:bg-brand-hover text-xs font-bold flex items-center gap-1 self-end sm:self-auto cursor-pointer shadow-2xs"
+                >
+                  <span>بررسی درخواست</span>
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+
+            {/* Action Item 2: Draft Payrolls (HR Only) */}
+            {isHR && draftSlips.length > 0 && (
+              <div className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-surface-2/40 px-2 rounded-[10px] transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-brand-soft text-brand flex items-center justify-center text-xs font-black shrink-0 border border-brand/20">
+                    <Wallet className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-black text-text-1 flex items-center gap-2">
+                      <span>دوره حقوق ماه جاری در وضعیت پیش‌نویس</span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-[4px] bg-brand-soft text-brand border border-brand/20">
+                        {toPersianDigits(draftSlips.length)} فیش پیش‌نویس
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-text-3 font-medium mt-0.5">
+                      محاسبات بیمه، مالیات و مزایا نیازمند بررسی و تایید نهایی است.
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onNavigate('payroll')}
+                  className="px-3 py-1.5 rounded-[8px] bg-brand text-white hover:bg-brand-hover text-xs font-bold flex items-center gap-1 self-end sm:self-auto cursor-pointer shadow-2xs"
+                >
+                  <span>بررسی فیش حقوق</span>
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {/* Action Item 3: Expiring / Pending Checklists */}
+            {pendingChecklists.slice(0, 2).map((item) => (
+              <div
+                key={item.id}
+                className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-surface-2/40 px-2 rounded-[10px] transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-blue-500/10 text-blue-600 flex items-center justify-center text-xs font-black shrink-0 border border-blue-500/20">
+                    <FileCheck2 className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-black text-text-1 flex items-center gap-2">
+                      <span>{item.title}</span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-[4px] bg-surface-2 text-text-3 border border-border-default">
+                        {item.type === 'ONBOARDING' ? 'ورود نیرو' : 'تسویه حساب'}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-text-3 font-medium mt-0.5">
+                      کارمند: {item.employeeName || 'نیروی جدید'} • دپارتمان: {item.department} • مهلت: {toPersianDigits(item.dueDateJalali)}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onNavigate('checklists')}
+                  className="px-3 py-1.5 rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-1 border border-border-default text-xs font-bold flex items-center gap-1 self-end sm:self-auto cursor-pointer"
+                >
+                  <span>مشاهده چک‌لیست</span>
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      {/* 5. 3-Click Navigation Grid (Instant Module Access) */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-extrabold text-slate-900">
-            دسترسی مستقیم ۳-کلیکی به ماژول‌های سامانه
+          <h3 className="text-sm font-black text-text-1">
+            دسترسی سریع به بخش‌های سامانه
           </h3>
-          <span className="text-xs font-semibold text-slate-400">
-            برای ورود سریع روی ماژول مورد نظر کلیک کنید
+          <span className="text-xs font-medium text-text-3">
+            انتخاب بخش برای ورود مستقیم
           </span>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-8 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-8 gap-3">
           {[
             {
               key: 'recruitment' as ModuleKey,
               title: 'جذب و استخدام',
-              desc: 'کانبان و هوش مصنوعی',
+              desc: 'رزومه‌ها و مصاحبه‌ها',
               icon: UserPlus,
-              color: 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border-emerald-200',
             },
             {
               key: 'employees' as ModuleKey,
               title: 'پرونده پرسنلی',
-              desc: 'احکام و چارت سازمانی',
+              desc: 'احکام و ساختار سازمانی',
               icon: Users,
-              color: 'text-blue-700 bg-blue-50 hover:bg-blue-100 border-blue-200',
             },
             {
               key: 'attendance' as ModuleKey,
               title: 'تردد و مرخصی',
-              desc: 'ورود/خروج و شیفت‌ها',
+              desc: 'ثبت تردد و شیفت‌ها',
               icon: Clock,
-              color: 'text-sky-700 bg-sky-50 hover:bg-sky-100 border-sky-200',
             },
             {
               key: 'payroll' as ModuleKey,
               title: 'حقوق و دستمزد',
-              desc: 'فیش حقوقی و بیمه',
+              desc: 'فیش حقوق، بیمه و مالیات',
               icon: Wallet,
-              color: 'text-amber-700 bg-amber-50 hover:bg-amber-100 border-amber-200',
             },
             {
               key: 'performance' as ModuleKey,
               title: 'مدیریت عملکرد',
-              desc: 'اهداف OKR و ارزیابی',
+              desc: 'اهداف فصلی و ارزیابی',
               icon: TrendingUp,
-              color: 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border-indigo-200',
             },
             {
               key: 'training' as ModuleKey,
-              title: 'آموزش و مهارت',
-              desc: 'ماتریس شایستگی و دوره‌ها',
+              title: 'آموزش سازمانی',
+              desc: 'دوره‌ها و مهارت‌ها',
               icon: GraduationCap,
-              color: 'text-purple-700 bg-purple-50 hover:bg-purple-100 border-purple-200',
             },
             {
               key: 'checklists' as ModuleKey,
               title: 'ورود و خروج',
-              desc: 'ان‌بوردینگ و تسویه',
+              desc: 'مراحل ورود و تسویه',
               icon: CheckSquare,
-              color: 'text-teal-700 bg-teal-50 hover:bg-teal-100 border-teal-200',
             },
             {
               key: 'analytics' as ModuleKey,
-              title: 'گزارشات و KPI',
-              desc: 'داشبورد تحلیلی ۳۶۰',
+              title: 'گزارش‌ها و تحلیل‌ها',
+              desc: 'شاخص‌های کلیدی',
               icon: BarChart3,
-              color: 'text-rose-700 bg-rose-50 hover:bg-rose-100 border-rose-200',
             },
           ].map((item) => {
             const Icon = item.icon;
@@ -768,15 +893,15 @@ export const ExecutiveDashboard: React.FC<ExecutiveDashboardProps> = ({
                 key={item.key}
                 type="button"
                 onClick={() => onNavigate(item.key)}
-                className={`flex flex-col items-center text-center p-4 rounded-2xl border transition-all cursor-pointer shadow-2xs hover:shadow-xs group ${item.color}`}
+                className="flex flex-col items-center text-center p-3.5 rounded-[12px] bg-surface-1 hover:bg-surface-2 border border-border-default hover:border-brand/40 transition-all cursor-pointer shadow-2xs hover:shadow-xs group"
               >
-                <div className="w-10 h-10 rounded-xl bg-white shadow-2xs flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                <div className="w-10 h-10 rounded-[10px] bg-brand-soft text-brand flex items-center justify-center mb-2 group-hover:scale-105 transition-transform border border-brand/20">
                   <Icon className="w-5 h-5" />
                 </div>
-                <div className="text-xs font-black text-slate-900 leading-tight">
+                <div className="text-xs font-black text-text-1 leading-tight">
                   {item.title}
                 </div>
-                <div className="text-[10px] text-slate-500 font-medium mt-1 leading-tight line-clamp-1">
+                <div className="text-[11px] text-text-3 font-medium mt-1 leading-tight line-clamp-1">
                   {item.desc}
                 </div>
               </button>

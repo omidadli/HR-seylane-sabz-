@@ -22,8 +22,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   onOpenMobileMenu,
   currentRole = UserRole.HR_DIRECTOR,
 }) => {
-  // Tabs the role may actually open (audit fix SEC-02); employees get their
-  // own slips via the personnel portal, not the payroll admin module.
+  // Tabs the role may actually open (audit fix SEC-02)
   const tabs = [
     { key: 'dashboard' as ModuleKey, label: 'پیشخوان', icon: LayoutDashboard },
     { key: 'recruitment' as ModuleKey, label: 'استخدام', icon: UserPlus },
@@ -32,7 +31,10 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   ].filter((t) => canAccessModule(currentRole, t.key));
 
   return (
-    <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-slate-200/90 px-2 py-1.5 shadow-lg">
+    <nav
+      dir="rtl"
+      className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-surface-1/95 backdrop-blur-md border-t border-border-default px-2 py-1 shadow-lg"
+    >
       <div className="flex items-center justify-around max-w-lg mx-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
@@ -44,35 +46,37 @@ export const BottomNav: React.FC<BottomNavProps> = ({
               type="button"
               onClick={() => onSelectModule(tab.key)}
               aria-label={tab.label}
-              className={`flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 px-3 rounded-2xl transition-all cursor-pointer ${
+              className={`flex flex-col items-center justify-center min-h-[48px] min-w-[52px] py-1 px-2 rounded-[10px] transition-all cursor-pointer select-none ${
                 isActive
-                  ? 'text-emerald-700 font-extrabold'
-                  : 'text-slate-500 hover:text-slate-800 font-medium'
+                  ? 'text-brand font-black'
+                  : 'text-text-3 hover:text-text-1 font-medium'
               }`}
             >
               <div
-                className={`p-1.5 rounded-xl transition-all ${
-                  isActive ? 'bg-emerald-100/90 text-emerald-800 scale-105' : ''
+                className={`p-1.5 rounded-[8px] transition-all ${
+                  isActive
+                    ? 'bg-brand-soft text-brand'
+                    : 'text-text-3'
                 }`}
               >
                 <Icon className="w-5 h-5" />
               </div>
-              <span className="text-[10px] mt-0.5">{tab.label}</span>
+              <span className="text-[10px] mt-0.5 leading-tight">{tab.label}</span>
             </button>
           );
         })}
 
-        {/* More / Menu Drawer Toggle */}
+        {/* More / Mobile Drawer Toggle */}
         <button
           type="button"
           onClick={onOpenMobileMenu}
           aria-label="سایر بخش‌ها"
-          className="flex flex-col items-center justify-center min-h-[44px] min-w-[44px] py-1 px-3 rounded-2xl text-slate-500 hover:text-slate-800 font-medium transition-all cursor-pointer"
+          className="flex flex-col items-center justify-center min-h-[48px] min-w-[52px] py-1 px-2 rounded-[10px] text-text-3 hover:text-text-1 font-medium transition-all cursor-pointer select-none"
         >
-          <div className="p-1.5 rounded-xl text-slate-600">
+          <div className="p-1.5 rounded-[8px] text-text-3">
             <Menu className="w-5 h-5" />
           </div>
-          <span className="text-[10px] mt-0.5">سایر بخش‌ها</span>
+          <span className="text-[10px] mt-0.5 leading-tight">سایر بخش‌ها</span>
         </button>
       </div>
     </nav>

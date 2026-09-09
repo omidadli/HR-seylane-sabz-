@@ -15,14 +15,13 @@ import {
   Briefcase,
   Building2,
   SlidersHorizontal,
-  ChevronLeft,
-  ArrowRight,
-  Command as CommandIcon,
-  CornerDownLeft,
   Video,
   Network,
   Zap,
   Bot,
+  CornerDownLeft,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ModuleKey, canAccessModule } from './Sidebar';
@@ -41,11 +40,18 @@ interface CommandPaletteProps {
   onSelectJob?: (jobId: string) => void;
 }
 
+type CommandCategory =
+  | 'اقدامات سریع و هوش مصنوعی'
+  | 'بخش‌های اصلی سامانه'
+  | 'موقعیت‌های شغلی'
+  | 'کارجویان و رزومه‌ها'
+  | 'برندها و مراکز';
+
 interface CommandItem {
   id: string;
   title: string;
   subtitle?: string;
-  category: 'اقدامات سریع و هوش مصنوعی' | 'بخش‌های اصلی سامانه' | 'موقعیت‌های شغلی' | 'کارجویان و رزومه‌ها' | 'برندها و مراکز';
+  category: CommandCategory;
   icon: React.ElementType;
   badge?: string;
   action: () => void;
@@ -65,17 +71,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
-  // Focus input when opened
+  // Focus input on open
   useEffect(() => {
     if (isOpen) {
       setQuery('');
       setSelectedIndex(0);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(() => inputRef.current?.focus(), 60);
     }
   }, [isOpen]);
 
-  // Handle global keyboard shortcut Ctrl+K / Cmd+K
+  // Global Ctrl+K / Cmd+K and Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -83,7 +90,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         if (isOpen) {
           onClose();
         } else {
-          // Open triggered from parent or event
           window.dispatchEvent(new CustomEvent('open-command-palette'));
         }
       }
@@ -106,7 +112,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         subtitle: 'مدیریت رفتار بات، بارگذاری سند فرهنگ سازمانی، پایپ‌لاین دپارتمان‌ها و تست زنده',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: Bot,
-        badge: 'Gemini Control Center',
+        badge: 'Gemini Control',
         action: () => {
           onClose();
           onSelectModule('ai-governance');
@@ -114,32 +120,32 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'action-voice',
-        title: 'گفتگوی صوتی هوشمند با دستیار منابع انسانی',
-        subtitle: 'پرسش درباره قوانین، گزارش کارخانه، صدور حقوق و استخدام',
+        title: 'گفتگوی صوتی با دستیار',
+        subtitle: 'پرسش درباره قوانین کار، تردد کارخانه و گزارش‌ها',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: Mic,
-        badge: 'هوش مصنوعی Gemini',
+        badge: 'دستیار صوتی',
         action: () => {
           onClose();
-          if (onOpenVoiceAssistant) onOpenVoiceAssistant();
+          onOpenVoiceAssistant?.();
         },
       },
       {
         id: 'action-job-generator',
-        title: 'تولید هوشمند شرح شغل و آگهی استخدام',
-        subtitle: 'نگارش مارک‌داون رسمی و پست شبکه‌های اجتماعی برای هلدینگ سیلانه سبز',
+        title: 'ایجاد آگهی شغلی',
+        subtitle: 'تنظیم متن آگهی و شرایط احراز شغل',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: Sparkles,
-        badge: 'تولید محتوا AI',
+        badge: 'آگهی شغلی',
         action: () => {
           onClose();
-          if (onOpenJobGenerator) onOpenJobGenerator();
+          onOpenJobGenerator?.();
         },
       },
       {
         id: 'action-criteria-matrix',
-        title: 'ماتریس شاخص‌ها و وزن‌دهی ارزیابی هوش مصنوعی',
-        subtitle: 'تنظیم معیارهای وتویی، حداقل نمرات و دستورالعمل مدیر برای استخدام',
+        title: 'ماتریس شاخص‌های ارزیابی',
+        subtitle: 'تنظیم وزن معیارها و حدنصاب قبولی',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: SlidersHorizontal,
         badge: 'ماتریس ارزیابی',
@@ -150,11 +156,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'action-hirevue-video',
-        title: 'استودیوی هوشمند مصاحبه ویدیویی (HireVue AI Studio)',
-        subtitle: 'مصاحبه غیرهمزمان، آزمون صلاحیت رفتاری و ارزیابی عادلانه بدون سوگیری',
+        title: 'مصاحبه ویدیویی',
+        subtitle: 'ثبت پاسخ‌های ویدیویی و ارزیابی شایستگی‌ها',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: Video,
-        badge: 'HireVue AI',
+        badge: 'مصاحبه',
         action: () => {
           onClose();
           onSelectModule('recruitment');
@@ -162,11 +168,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'action-eightfold-skills',
-        title: 'گراف مهارت‌ها و جابجایی داخلی استعدادها (Eightfold AI)',
-        subtitle: 'شناسایی مهارت‌های مجاور ۳۰ روزه و ترفیع کارمندان دافی، کامان، میس‌ویک و کاپوت',
+        title: 'گراف مهارت‌ها و ارتقای شغلی',
+        subtitle: 'تحلیل مهارت‌ها و فرصت‌های ارتقای درون‌سازمانی',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: Network,
-        badge: 'Eightfold AI',
+        badge: 'مهارت‌ها',
         action: () => {
           onClose();
           onSelectModule('recruitment');
@@ -174,11 +180,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'action-ziprecruiter-sourcing',
-        title: 'سورسینگ هوشمند و انتشار همزمان آگهی (ZipRecruiter Smart)',
-        subtitle: 'شکار استعدادهای برتر، دعوت با ۱ کلیک و انتشار در جابینجا، جاب‌ویژن و لینکدین',
+        title: 'انتشار آگهی و جذب کارجو',
+        subtitle: 'انتشار آگهی در بسترهای کاریابی و دریافت رزومه‌ها',
         category: 'اقدامات سریع و هوش مصنوعی',
         icon: Zap,
-        badge: 'ZipRecruiter',
+        badge: 'انتشار آگهی',
         action: () => {
           onClose();
           onSelectModule('recruitment');
@@ -187,12 +193,23 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
 
       // Navigation Modules
       {
+        id: 'nav-dashboard',
+        title: 'داشبورد اجرایی',
+        subtitle: 'شاخص‌های کلیدی منابع انسانی و وضعیت کارخانجات',
+        category: 'بخش‌های اصلی سامانه',
+        icon: Sparkles,
+        action: () => {
+          onClose();
+          onSelectModule('dashboard');
+        },
+      },
+      {
         id: 'nav-ai-governance',
-        title: 'مدیریت و حاکمیت هوش مصنوعی (Gemini Bot Center)',
-        subtitle: 'پیکربندی فرهنگ سازمانی، پایپ‌لاین ارزیابی دپارتمان‌ها و رفتار بات',
+        title: 'مدیریت دستیار',
+        subtitle: 'تنظیم رفتار دستیار و سند فرهنگ سازمانی',
         category: 'بخش‌های اصلی سامانه',
         icon: Bot,
-        badge: 'Gemini AI',
+        badge: 'Gemini',
         action: () => {
           onClose();
           onSelectModule('ai-governance');
@@ -200,8 +217,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-recruitment',
-        title: 'جذب و استخدام (کانبان و غربالگری هوشمند)',
-        subtitle: 'مدیریت رزومه‌ها، ارزیابی چندبعدی هوش مصنوعی و مصاحبه‌ها',
+        title: 'جذب و استخدام',
+        subtitle: 'مدیریت رزومه‌ها، ارزیابی کارجویان و مصاحبه‌ها',
         category: 'بخش‌های اصلی سامانه',
         icon: UserPlus,
         action: () => {
@@ -211,8 +228,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-employees',
-        title: 'پرونده پرسنلی و چارت سازمانی',
-        subtitle: 'مشخصات کارکنان، قراردادها و ساختار سازمانی برندها',
+        title: 'پرونده پرسنلی',
+        subtitle: 'اطلاعات کارکنان، احکام کارگزینی و چارت سازمانی',
         category: 'بخش‌های اصلی سامانه',
         icon: Users,
         action: () => {
@@ -222,8 +239,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-attendance',
-        title: 'مدیریت تردد، مرخصی و شیفت‌های کاری',
-        subtitle: 'ثبت حضور و غیاب، مرخصی استحقاقی و تردد کارخانجات اشتهارد',
+        title: 'تردد و مرخصی',
+        subtitle: 'ثبت تردد، سهمیه مرخصی و شیفت‌های کارخانه',
         category: 'بخش‌های اصلی سامانه',
         icon: Clock,
         action: () => {
@@ -233,10 +250,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-payroll',
-        title: 'حقوق، دستمزد و فیش‌های پرسنلی',
-        subtitle: 'محاسبه حقوق بر مبنای بخشنامه سال، بیمه ۷٪ تأمین اجتماعی و مالیات پله‌ای',
+        title: 'حقوق و دستمزد',
+        subtitle: 'محاسبه حقوق، بیمه ۷٪، مالیات و فیش حقوق',
         category: 'بخش‌های اصلی سامانه',
         icon: Wallet,
+        badge: 'محرمانه',
         action: () => {
           onClose();
           onSelectModule('payroll');
@@ -244,8 +262,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-performance',
-        title: 'مدیریت عملکرد و اهداف سازمانی (OKR)',
-        subtitle: 'تعریف اهداف فصلی، شاخص‌های کلیدی عملکرد و ارزیابی شایستگی',
+        title: 'ارزیابی عملکرد (OKR)',
+        subtitle: 'اهداف فصلی، شایستگی‌ها و ارزیابی دوره‌ای',
         category: 'بخش‌های اصلی سامانه',
         icon: TrendingUp,
         action: () => {
@@ -255,8 +273,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-training',
-        title: 'آموزش سازمانی و ماتریس مهارت‌ها',
-        subtitle: 'دوره‌های تخصصی، استانداردهای GMP و توسعه فردی همکاران',
+        title: 'آموزش کارکنان',
+        subtitle: 'دوره‌های آموزشی، استانداردهای GMP و ماتریس مهارت',
         category: 'بخش‌های اصلی سامانه',
         icon: GraduationCap,
         action: () => {
@@ -266,8 +284,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-checklists',
-        title: 'چک‌لیست‌های ان‌بوردینگ و آف‌بوردینگ',
-        subtitle: 'فرآیند ورود نیروهای جدید و تسویه‌حساب مرحله‌ای',
+        title: 'چک‌لیست استخدام و تسویه',
+        subtitle: 'مراحل ورود، تحویل اقلام و تسویه حساب',
         category: 'بخش‌های اصلی سامانه',
         icon: CheckSquare,
         action: () => {
@@ -277,8 +295,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'nav-analytics',
-        title: 'داشبورد تحلیل‌ها و شاخص‌های کلیدی (HR KPI)',
-        subtitle: 'نرخ گردش، زمان پر شدن موقعیت‌ها، هزینه‌های جذب و گزارشات آماری',
+        title: 'گزارش‌ها و تحلیل‌ها',
+        subtitle: 'نرخ خروج، زمان جذب و هزینه‌های پرسنلی',
         category: 'بخش‌های اصلی سامانه',
         icon: BarChart3,
         action: () => {
@@ -290,8 +308,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       // Brands & Facilities
       {
         id: 'brand-dafi',
-        title: 'برند دافی (Dafi)',
-        subtitle: 'تولید تخصصی دستمال مرطوب و مراقبت از پوست • ۴۲۰ پرسنل فعال',
+        title: 'برند دافی',
+        subtitle: 'تولید دستمال مرطوب و بهداشتی • ۴۲۰ نفر پرسنل',
         category: 'برندها و مراکز',
         icon: Building2,
         badge: 'برند هلدینگ',
@@ -302,8 +320,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'brand-comeon',
-        title: 'برند کامان (Come\'on)',
-        subtitle: 'محصولات لوکس مراقبت پوستی و آرایشی • ۳۸۰ پرسنل فعال',
+        title: 'برند کامان',
+        subtitle: 'محصولات مراقبت پوست و مو • ۳۸۰ نفر پرسنل',
         category: 'برندها و مراکز',
         icon: Building2,
         badge: 'برند هلدینگ',
@@ -314,8 +332,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       },
       {
         id: 'brand-factory',
-        title: 'مجموعه کارخانجات تولیدی اشتهارد',
-        subtitle: 'خطوط تولید دافی و کامان، سالن‌های تمیز (Clean Room) و انبار مرکزی',
+        title: 'کارخانجات اشتهارد',
+        subtitle: 'خطوط تولید، اتاق تمیز و انبار مرکزی',
         category: 'برندها و مراکز',
         icon: Building2,
         badge: 'سایت تولیدی',
@@ -347,8 +365,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     candidates.forEach((cand) => {
       items.push({
         id: `cand-${cand.id}`,
-        title: `${cand.fullName} — ${cand.jobTitle || 'متقاضی شغلی'}`,
-        subtitle: `امتیاز کل هوش مصنوعی: ${toPersianDigits(cand.overallScore ?? '—')} از ۱۰ • تاریخ ثبت: ${toPersianDigits(cand.appliedAtJalali || 'امروز')}`,
+        title: `${cand.fullName} — ${cand.jobTitle || 'کارجو'}`,
+        subtitle: `امتیاز کل: ${toPersianDigits(cand.overallScore ?? '—')} از ۱۰ • تاریخ ثبت: ${toPersianDigits(cand.appliedAtJalali || 'امروز')}`,
         category: 'کارجویان و رزومه‌ها',
         icon: Users,
         badge:
@@ -364,11 +382,16 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       });
     });
 
-    // Role gating (audit fix SEC-02): hide commands this role cannot execute.
+    // Role gating (audit fix SEC-02)
     const RECRUITMENT_COMMANDS = new Set([
-      'action-job-generator', 'action-criteria-matrix', 'action-hirevue-video',
-      'action-eightfold-skills', 'action-ziprecruiter-sourcing', 'nav-recruitment',
+      'action-job-generator',
+      'action-criteria-matrix',
+      'action-hirevue-video',
+      'action-eightfold-skills',
+      'action-ziprecruiter-sourcing',
+      'nav-recruitment',
     ]);
+
     return items.filter((item) => {
       if (RECRUITMENT_COMMANDS.has(item.id)) return canAccessModule(currentRole, 'recruitment');
       if (item.id === 'nav-payroll') return canAccessModule(currentRole, 'payroll');
@@ -377,18 +400,37 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     });
   }, [jobs, candidates, currentRole, onClose, onSelectModule, onOpenVoiceAssistant, onOpenJobGenerator, onSelectJob]);
 
-  // Filter items
+  // Fuzzy filter
   const filteredItems = useMemo(() => {
-    if (!query.trim()) return allItems.slice(0, 15);
-    const q = query.toLowerCase().trim();
+    if (!query.trim()) return allItems.slice(0, 18);
+    const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+
     return allItems
-      .filter((item) =>
-        item.title.toLowerCase().includes(q) ||
-        (item.subtitle && item.subtitle.toLowerCase().includes(q)) ||
-        item.category.toLowerCase().includes(q)
-      )
-      .slice(0, 20);
+      .filter((item) => {
+        const text = `${item.title} ${item.subtitle || ''} ${item.category}`.toLowerCase();
+        return words.every((w) => text.includes(w));
+      })
+      .slice(0, 24);
   }, [allItems, query]);
+
+  // Grouped filtered items for rendering headers
+  const groupedItems = useMemo(() => {
+    const groups: { category: CommandCategory; items: { item: CommandItem; globalIndex: number }[] }[] = [];
+    const categoryMap = new Map<CommandCategory, { item: CommandItem; globalIndex: number }[]>();
+
+    filteredItems.forEach((item, index) => {
+      if (!categoryMap.has(item.category)) {
+        categoryMap.set(item.category, []);
+      }
+      categoryMap.get(item.category)!.push({ item, globalIndex: index });
+    });
+
+    categoryMap.forEach((items, category) => {
+      groups.push({ category, items });
+    });
+
+    return groups;
+  }, [filteredItems]);
 
   // Keyboard navigation within list
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -406,22 +448,36 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
   };
 
+  // Scroll active item into view
+  useEffect(() => {
+    if (listRef.current) {
+      const activeEl = listRef.current.querySelector('[data-selected="true"]') as HTMLElement | null;
+      if (activeEl) {
+        activeEl.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }, [selectedIndex]);
+
   if (!isOpen) return null;
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/60 backdrop-blur-sm">
+      <div
+        dir="rtl"
+        className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-sm"
+        onClick={onClose}
+      >
         <motion.div
-          initial={{ opacity: 0, scale: 0.96, y: -10 }}
+          initial={{ opacity: 0, scale: 0.96, y: -12 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.96, y: -10 }}
-          transition={{ duration: 0.18 }}
-          className="bg-white rounded-3xl shadow-2xl border border-slate-200/90 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]"
+          exit={{ opacity: 0, scale: 0.96, y: -12 }}
+          transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+          className="bg-surface-1 rounded-[14px] shadow-2xl border border-border-default w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh]"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Top Search Input Bar */}
-          <div className="flex items-center gap-3 px-5 py-4 border-b border-slate-100 bg-slate-50/50">
-            <Search className="w-5 h-5 text-emerald-600 shrink-0" />
+          <div className="flex items-center gap-3 px-4 py-3.5 border-b border-border-default bg-surface-2/60">
+            <Search className="w-5 h-5 text-brand shrink-0" />
             <input
               ref={inputRef}
               type="text"
@@ -431,108 +487,130 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
                 setSelectedIndex(0);
               }}
               onKeyDown={handleKeyDown}
-              placeholder="جستجو در تمام بخش‌ها، رزومه‌ها، مشاغل، فیش‌ها و اقدامات هوش مصنوعی..."
-              aria-label="جستجو در تمام بخش‌ها، رزومه‌ها، مشاغل، فیش‌ها و اقدامات هوش مصنوعی"
-              className="w-full bg-transparent border-none text-slate-800 text-sm font-semibold placeholder:text-slate-400 focus:outline-none"
+              placeholder="جستجو در بخش‌ها، پرسنل، احکام، فیش حقوق..."
+              aria-label="جستجو در سامانه"
+              className="w-full bg-transparent border-none text-text-1 text-sm font-semibold placeholder:text-text-3 focus:outline-none"
             />
             {query && (
               <button
                 type="button"
                 onClick={() => setQuery('')}
-                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-200/60 transition-all"
+                className="p-1 text-text-3 hover:text-text-1 rounded-[8px] hover:bg-surface-3 transition-all cursor-pointer"
+                aria-label="پاک کردن متن جستجو"
               >
                 <X className="w-4 h-4" />
               </button>
             )}
-            <kbd className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold text-slate-400 bg-white border border-slate-200 rounded-lg shadow-2xs">
+            <kbd className="hidden sm:inline-flex items-center px-2 py-0.5 text-[10px] font-bold text-text-3 bg-surface-1 border border-border-default rounded-[6px] shadow-2xs">
               ESC
             </kbd>
           </div>
 
-          {/* List of Results */}
-          <div className="overflow-y-auto p-2.5 flex-1 divide-y divide-slate-100/60">
+          {/* List of Grouped Results */}
+          <div ref={listRef} className="overflow-y-auto p-2 flex-1 divide-y divide-border-default/40">
             {filteredItems.length === 0 ? (
-              <div className="p-10 text-center text-slate-400 text-xs">
-                موردی برای جستجوی شما یافت نشد. می‌توانید با جستجوی واژگانی مانند «استخدام»، «حقوق»، «مرخصی»، یا نام کارجویان جستجو کنید.
+              <div className="p-10 text-center text-text-3 text-xs">
+                موردی یافت نشد. می‌توانید عناوینی مانند «استخدام»، «حقوق»، «مرخصی» یا نام کارجو را جستجو کنید.
               </div>
             ) : (
-              filteredItems.map((item, idx) => {
-                const Icon = item.icon;
-                const isSelected = idx === selectedIndex;
+              groupedItems.map((group) => (
+                <div key={group.category} className="py-1.5 first:pt-0 last:pb-0">
+                  {/* Category Header */}
+                  <div className="px-3 py-1 text-[10px] font-black text-text-3 uppercase tracking-wider select-none">
+                    {group.category}
+                  </div>
 
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={item.action}
-                    onMouseEnter={() => setSelectedIndex(idx)}
-                    className={`w-full text-right flex items-center justify-between p-3 rounded-2xl transition-all cursor-pointer ${
-                      isSelected
-                        ? 'bg-emerald-50 text-emerald-950 shadow-xs border border-emerald-200/70'
-                        : 'hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div
-                        className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 transition-colors ${
-                          isSelected
-                            ? 'bg-emerald-600 text-white shadow-xs shadow-emerald-600/30'
-                            : 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        <Icon className="w-4 h-4" />
-                      </div>
+                  {/* Group Items */}
+                  <div className="space-y-1 mt-0.5">
+                    {group.items.map(({ item, globalIndex }) => {
+                      const Icon = item.icon;
+                      const isSelected = globalIndex === selectedIndex;
 
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-bold text-slate-900 truncate">
-                            {item.title}
-                          </span>
-                          {item.badge && (
-                            <span className="text-[10px] font-black px-2 py-0.2 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
-                              {item.badge}
-                            </span>
-                          )}
-                        </div>
-                        {item.subtitle && (
-                          <div className="text-[11px] text-slate-500 font-medium truncate mt-0.5">
-                            {item.subtitle}
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          data-selected={isSelected}
+                          onClick={item.action}
+                          onMouseEnter={() => setSelectedIndex(globalIndex)}
+                          className={`w-full text-right flex items-center justify-between p-2.5 rounded-[10px] transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-brand-soft text-brand font-bold border border-brand/25 shadow-2xs'
+                              : 'hover:bg-surface-2 text-text-2 hover:text-text-1 border border-transparent'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div
+                              className={`w-8 h-8 rounded-[8px] flex items-center justify-center shrink-0 transition-colors ${
+                                isSelected
+                                  ? 'bg-brand text-white shadow-2xs'
+                                  : 'bg-surface-2 text-text-2'
+                              }`}
+                            >
+                              <Icon className="w-4 h-4" />
+                            </div>
+
+                            <div className="min-w-0 text-right">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-black truncate text-text-1">
+                                  {item.title}
+                                </span>
+                                {item.badge && (
+                                  <span
+                                    className={`text-[9px] font-black px-1.5 py-0.2 rounded-[6px] shrink-0 ${
+                                      isSelected
+                                        ? 'bg-brand text-white'
+                                        : 'bg-surface-2 text-text-3 border border-border-default'
+                                    }`}
+                                  >
+                                    {item.badge}
+                                  </span>
+                                )}
+                              </div>
+                              {item.subtitle && (
+                                <div className="text-[11px] text-text-3 font-medium truncate mt-0.5">
+                                  {item.subtitle}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </div>
-                    </div>
 
-                    <div className="flex items-center gap-2 shrink-0 pr-3">
-                      <span className="text-[10px] text-slate-400 font-semibold hidden sm:inline">
-                        {item.category}
-                      </span>
-                      {isSelected && (
-                        <div className="flex items-center gap-1 text-[10px] text-emerald-700 font-bold bg-emerald-100/80 px-2 py-0.5 rounded-lg">
-                          <span>انتخاب</span>
-                          <CornerDownLeft className="w-3 h-3" />
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                );
-              })
+                          <div className="flex items-center gap-2 shrink-0 mr-2">
+                            {isSelected && (
+                              <div className="flex items-center gap-1 text-[10px] text-brand font-bold bg-surface-1 px-2 py-0.5 rounded-[6px] border border-brand/30 shadow-2xs">
+                                <span>انتخاب</span>
+                                <CornerDownLeft className="w-3 h-3" />
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))
             )}
           </div>
 
           {/* Footer with Shortcuts */}
-          <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400 font-medium">
+          <div className="px-4 py-2.5 bg-surface-2 border-t border-border-default flex items-center justify-between text-[11px] text-text-3 font-medium">
             <div className="flex items-center gap-3">
               <span className="flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[10px]">↑↓</kbd>
+                <kbd className="px-1.5 py-0.5 bg-surface-1 border border-border-default rounded-[6px] text-[10px] font-bold text-text-2 flex items-center gap-0.5">
+                  <ArrowUp className="w-2.5 h-2.5" />
+                  <ArrowDown className="w-2.5 h-2.5" />
+                </kbd>
                 <span>پیمایش</span>
               </span>
               <span className="flex items-center gap-1">
-                <kbd className="px-1.5 py-0.5 bg-white border border-slate-200 rounded text-[10px]">Enter</kbd>
-                <span>انتخاب فوری</span>
+                <kbd className="px-1.5 py-0.5 bg-surface-1 border border-border-default rounded-[6px] text-[10px] font-bold text-text-2">
+                  Enter
+                </kbd>
+                <span>انتخاب</span>
               </span>
             </div>
-            <div className="text-emerald-700 font-bold">
-              دسترسی ۳-کلیکی سامانه منابع انسانی سیلانه سبز
+            <div className="text-brand font-bold text-xs">
+              سامانه کارا • هلدینگ سیلانه سبز
             </div>
           </div>
         </motion.div>

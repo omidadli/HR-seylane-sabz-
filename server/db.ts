@@ -12,9 +12,17 @@ import { PrismaClient } from '@prisma/client';
 
 export const isDatabaseConfigured = Boolean(process.env.DATABASE_URL);
 
-export const prisma: PrismaClient | null = isDatabaseConfigured
-  ? new PrismaClient()
-  : null;
+let client: PrismaClient | null = null;
+if (isDatabaseConfigured) {
+  try {
+    client = new PrismaClient();
+  } catch (err) {
+    console.warn('[db] Failed to instantiate PrismaClient — falling back to in-memory store:', err);
+    client = null;
+  }
+}
+
+export const prisma: PrismaClient | null = client;
 
 if (!isDatabaseConfigured) {
   // eslint-disable-next-line no-console

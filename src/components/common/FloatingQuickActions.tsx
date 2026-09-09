@@ -6,7 +6,6 @@ import {
   ArrowUp,
   Plus,
   X,
-  SlidersHorizontal,
   Bot,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
@@ -33,66 +32,75 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
   };
 
   return (
-    <div className="fixed bottom-6 left-6 z-40 flex flex-col items-start gap-2.5">
+    <div
+      dir="rtl"
+      className="fixed bottom-20 lg:bottom-6 left-6 z-40 flex flex-col items-start gap-2.5"
+    >
       <AnimatePresence>
         {isOpen && (
           <motion.div
-            initial={{ opacity: 0, y: 15, scale: 0.9 }}
+            role="menu"
+            aria-label="دسترسی سریع"
+            initial={{ opacity: 0, y: 15, scale: 0.92 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 15, scale: 0.9 }}
-            transition={{ duration: 0.18 }}
+            exit={{ opacity: 0, y: 15, scale: 0.92 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
             className="flex flex-col items-start gap-2 mb-1"
           >
             {/* Action 1: Voice AI */}
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setIsOpen(false);
                 onOpenVoiceAssistant();
               }}
-              className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl bg-emerald-700 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-700/30 text-xs font-bold transition-all transform active:scale-95 cursor-pointer"
+              className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-[10px] bg-brand text-white shadow-lg text-xs font-bold transition-all transform active:scale-95 cursor-pointer hover:bg-brand-hover"
             >
-              <Mic className="w-4 h-4" />
-              <span>دستیار صوتی هوش مصنوعی</span>
+              <Mic className="w-4 h-4 text-white" aria-hidden="true" />
+              <span>دستیار صوتی (Gemini)</span>
             </button>
 
             {/* Action 2: Job Ad Generator */}
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setIsOpen(false);
                 onOpenJobGenerator();
               }}
-              className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-emerald-300 shadow-lg text-xs font-bold transition-all transform active:scale-95 cursor-pointer border border-slate-700"
+              className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-[10px] bg-surface-1 text-text-1 shadow-lg text-xs font-bold transition-all transform active:scale-95 cursor-pointer border border-border-default hover:bg-surface-2"
             >
-              <Sparkles className="w-4 h-4 text-emerald-400" />
-              <span>تولید هوشمند آگهی استخدام</span>
+              <Sparkles className="w-4 h-4 text-brand" aria-hidden="true" />
+              <span>ایجاد آگهی شغلی</span>
             </button>
 
-            {/* Action 3: Spotlight Search (3 clicks / 1 keystroke) */}
+            {/* Action 3: Spotlight Search (⌘K / Ctrl+K) */}
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setIsOpen(false);
                 onOpenCommandPalette();
               }}
-              className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl bg-white hover:bg-slate-50 text-slate-800 shadow-lg text-xs font-bold transition-all transform active:scale-95 cursor-pointer border border-slate-200"
+              className="flex items-center gap-2.5 px-3.5 py-2.5 rounded-[10px] bg-surface-1 text-text-2 shadow-lg text-xs font-bold transition-all transform active:scale-95 cursor-pointer border border-border-default hover:bg-surface-2 hover:text-text-1"
             >
-              <Command className="w-4 h-4 text-emerald-600" />
-              <span>جستجوی سریع (Ctrl+K)</span>
+              <Command className="w-4 h-4 text-text-3" aria-hidden="true" />
+              <span>جستجو در سامانه (⌘K)</span>
             </button>
 
             {/* Action 4: Scroll Top */}
             <button
               type="button"
+              role="menuitem"
               onClick={() => {
                 setIsOpen(false);
                 scrollToTop();
               }}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px] font-semibold transition-all cursor-pointer"
+              className="flex items-center gap-2 px-3 py-1.5 rounded-[8px] bg-surface-2 hover:bg-surface-3 text-text-3 hover:text-text-1 text-[11px] font-bold transition-all cursor-pointer border border-border-default shadow-2xs"
             >
-              <ArrowUp className="w-3.5 h-3.5" />
-              <span>بازگشت به بالا</span>
+              <ArrowUp className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>بازگشت به بالای صفحه</span>
             </button>
           </motion.div>
         )}
@@ -102,15 +110,17 @@ export const FloatingQuickActions: React.FC<FloatingQuickActionsProps> = ({
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className={`w-13 h-13 rounded-2xl flex items-center justify-center shadow-xl transition-all transform active:scale-95 cursor-pointer ${
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        aria-label={isOpen ? 'بستن منوی دسترسی سریع' : 'باز کردن منوی دسترسی سریع'}
+        className={`w-12 h-12 rounded-[14px] flex items-center justify-center shadow-xl transition-all transform active:scale-95 cursor-pointer select-none ${
           isOpen
-            ? 'bg-slate-900 text-white rotate-45 border border-slate-700'
-            : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/30'
+            ? 'bg-surface-1 text-text-1 border border-border-default rotate-45 shadow-md'
+            : 'bg-brand text-white shadow-brand/30 hover:bg-brand-hover'
         }`}
-        title="دسترسی سریع به امکانات هوشمند"
-        aria-label="دسترسی سریع هوشمند"
+        title={isOpen ? 'بستن منوی دسترسی سریع' : 'دسترسی سریع'}
       >
-        {isOpen ? <Plus className="w-6 h-6" /> : <Bot className="w-6 h-6" />}
+        {isOpen ? <Plus className="w-5 h-5" aria-hidden="true" /> : <Bot className="w-5 h-5" aria-hidden="true" />}
       </button>
     </div>
   );
