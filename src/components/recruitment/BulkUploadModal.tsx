@@ -163,6 +163,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     review: number;
     rejected: number;
   } | null>(null);
+  const [governanceWarning, setGovernanceWarning] = useState<string | null>(null);
 
   // Refs for file inputs
   const manualFileInputRef = useRef<HTMLInputElement>(null);
@@ -513,6 +514,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
   // Execute Final Server-Side Processing (Step 3)
   const handleStartServerEvaluation = async () => {
     setUploadError(null);
+    setGovernanceWarning(null);
     const readyFiles = stagedFiles.filter(
       (f) => f.status === 'SUCCESS' && f.text && f.text.trim().length >= 25
     );
@@ -563,6 +565,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
         review: data.needsReviewCount ?? 0,
         rejected: data.initialRejectionCount ?? 0,
       });
+      setGovernanceWarning(data.governanceWarning || null);
 
       onUploadComplete(data);
     } catch (err: any) {
@@ -1320,6 +1323,14 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
               </div>
             )}
 
+            {/* Non-blocking heads-up: this department has no pipeline yet in "مدیریت دستیار" */}
+            {governanceWarning && (
+              <div className="flex items-start gap-2 bg-warning-soft border border-warning/30 text-warning px-3.5 py-2.5 rounded-[10px] text-xs font-bold animate-in fade-in">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{governanceWarning}</span>
+              </div>
+            )}
+
             {/* Results Summary Card with Direct Link to Screening Studio */}
             {processedStats && (
               <div className="bg-brand-soft/40 rounded-[14px] p-4 border border-brand/40 space-y-3.5 animate-in fade-in">
@@ -1366,6 +1377,7 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
                     onClick={() => {
                       setStagedFiles([]);
                       setProcessedStats(null);
+                      setGovernanceWarning(null);
                       setCurrentStep(2);
                     }}
                     className="px-3 py-1.5 bg-surface-1 hover:bg-surface-2 border border-border-default text-text-2 rounded-[8px] text-xs font-semibold cursor-pointer"

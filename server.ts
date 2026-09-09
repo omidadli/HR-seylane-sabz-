@@ -23,6 +23,7 @@ import {
   ChecklistItem,
   Employee,
   JobHistoryItem,
+  JobPosting,
   LeaveRequest,
   LeaveStatus,
   LeaveType,
@@ -595,6 +596,69 @@ async function startServer() {
     return results;
   }
 
+  // Merge a job's own evaluation criteria with the org-wide + department-level
+  // settings defined in "مدیریت دستیار" (AI Governance). Org-wide culture/values
+  // always apply. Department-specific veto rules + minimum passing score are
+  // layered on top only when a pipeline exists for that department; if not,
+  // the job's own settings are used unchanged and `pipelineFound: false` is
+  // returned so callers can surface a non-blocking heads-up (transition period).
+  function buildGovernanceEnhancedEvalParams(targetJob: JobPosting) {
+    const gov = dbStore.aiGovernanceConfig;
+
+    const baseCriteria = targetJob.criteria || [];
+    const baseScoringMethod = targetJob.scoringMethod || 'WEIGHTED_AVG';
+    const baseAiRigor = targetJob.aiRigor || 'BALANCED';
+    const baseInstructionsParts: string[] = [];
+    if (targetJob.evaluationInstructions) baseInstructionsParts.push(targetJob.evaluationInstructions);
+    let priorityCutoff = targetJob.interviewPriorityThreshold ?? 7.0;
+    let rejectionCutoff = targetJob.initialRejectionThreshold ?? 5.0;
+
+    // Org-wide culture & values always apply, regardless of department pipeline.
+    const culture = gov.culture;
+    if (culture) {
+      const cultureParts: string[] = [];
+      if (culture.companyVision) cultureParts.push(`چشم‌انداز سازمان: ${culture.companyVision}`);
+      if (culture.coreValues?.length) {
+        cultureParts.push(`ارزش‌های محوری هلدینگ: ${culture.coreValues.map(v => v.title).join('، ')}`);
+      }
+      if (culture.unacceptableBehaviors?.length) {
+        cultureParts.push(`رفتارهای غیرقابل‌قبول (در صورت وجود شواهد در رزومه، در تحلیل لحاظ شود): ${culture.unacceptableBehaviors.join('، ')}`);
+      }
+      if (cultureParts.length) {
+        baseInstructionsParts.push(`دستورالعمل‌های فرهنگ سازمانی هلدینگ:\n${cultureParts.join('\n')}`);
+      }
+    }
+    if (gov.generalEvaluationRules?.length) {
+      baseInstructionsParts.push(`قوانین کلی ارزیابی سازمان: ${gov.generalEvaluationRules.join('؛ ')}`);
+    }
+
+    const pipeline = gov.departmentPipelines.find(p => p.departmentName === targetJob.department);
+    const pipelineFound = Boolean(pipeline);
+
+    if (pipeline) {
+      if (pipeline.customPromptInstructions) baseInstructionsParts.push(pipeline.customPromptInstructions);
+      if (pipeline.vetoRules?.length) {
+        baseInstructionsParts.push(`موارد وتوی دپارتمانی (در صورت احراز، امتیاز نهایی باید زیر آستانه رد اولیه قرار گیرد): ${pipeline.vetoRules.join('، ')}`);
+      }
+      // Department minimum passing score is a floor: the effective rejection
+      // cutoff can never be looser than what the department pipeline requires.
+      if (typeof pipeline.minimumPassingScore === 'number') {
+        rejectionCutoff = Math.max(rejectionCutoff, pipeline.minimumPassingScore);
+      }
+    }
+
+    return {
+      criteria: baseCriteria,
+      scoringMethod: baseScoringMethod,
+      aiRigor: baseAiRigor,
+      evaluationInstructions: baseInstructionsParts.filter(Boolean).join('\n\n'),
+      interviewPriorityThreshold: priorityCutoff,
+      initialRejectionThreshold: rejectionCutoff,
+      pipelineFound,
+      departmentName: targetJob.department,
+    };
+  }
+
   app.post('/api/candidates/bulk-upload', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
     try {
       const { jobId, files } = req.body;
@@ -627,12 +691,15 @@ async function startServer() {
         });
       }
 
-      const evalCriteria = targetJob.criteria || [];
-      const evalScoringMethod = targetJob.scoringMethod || 'WEIGHTED_AVG';
-      const evalAiRigor = targetJob.aiRigor || 'BALANCED';
-      const evalInstructions = targetJob.evaluationInstructions;
-      const evalPriority = targetJob.interviewPriorityThreshold ?? 7.0;
-      const evalRejection = targetJob.initialRejectionThreshold ?? 5.0;
+      const {
+        criteria: evalCriteria,
+        scoringMethod: evalScoringMethod,
+        aiRigor: evalAiRigor,
+        evaluationInstructions: evalInstructions,
+        interviewPriorityThreshold: evalPriority,
+        initialRejectionThreshold: evalRejection,
+        pipelineFound: governancePipelineFound,
+      } = buildGovernanceEnhancedEvalParams(targetJob);
 
       const evaluations = await runWithConcurrencyLimit(validFiles, 5, async (file, i) => {
         const fullName = extractCandidateNameFromFilename(file.name, i);
@@ -704,6 +771,10 @@ async function startServer() {
         needsReviewCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.NEEDS_REVIEW).length,
         initialRejectionCount: newCandidatesBatch.filter(c => c.category === CandidateCategory.INITIAL_REJECTION).length,
         sampleCandidates: newCandidatesBatch.slice(0, 5),
+        governancePipelineFound,
+        governanceWarning: governancePipelineFound
+          ? undefined
+          : `برای دپارتمان «${targetJob.department}» هنوز پایپ‌لاین ارزیابی در «مدیریت دستیار» تعریف نشده است. این رزومه‌ها فقط بر اساس شاخص‌های خود این موقعیت شغلی ارزیابی شدند (بدون قوانین وتوی دپارتمانی و حداقل نمره قبولی دپارتمان). برای افزودن این دپارتمان به صفحه «مدیریت دستیار» مراجعه فرمایید.`,
         message: usedLocalEngine
           ? `${toPersianDigits(newCandidatesBatch.length)} رزومه با موتور ارزیابی محلی (بدون Gemini) امتیازدهی و ثبت شد — نتایج با برچسب «موتور محلی» نمایش داده می‌شود. دسته‌بندی‌ها پیشنهادی است و مرحله هیچ کارجویی خودکار تغییر نکرد.`
           : `${toPersianDigits(newCandidatesBatch.length)} رزومه ارزیابی و ثبت شد. دسته‌بندی‌ها پیشنهادی است و مرحله هیچ کارجویی خودکار تغییر نکرد.`,
