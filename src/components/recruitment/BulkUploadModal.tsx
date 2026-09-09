@@ -174,8 +174,6 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
     }
   }, [isOpen, activeJobId]);
 
-  if (!isOpen) return null;
-
   // Selected job entity
   const selectedJob = localJobs.find((j) => j.id === selectedJobId) || localJobs[0];
 
@@ -508,6 +506,8 @@ export const BulkUploadModal: React.FC<BulkUploadModalProps> = ({
       return true;
     });
   }, [stagedFiles, statusFilter, searchQuery]);
+
+  if (!isOpen) return null;
 
   // Execute Final Server-Side Processing (Step 3)
   const handleStartServerEvaluation = async () => {
