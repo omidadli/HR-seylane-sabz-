@@ -104,6 +104,7 @@ export interface Candidate {
   criteriaScores?: Record<string, number>; // Criteria title -> score (1-10)
   criteriaFeedback?: Record<string, string>; // Criteria title -> AI justification text
   executiveSummary?: string; // AI-generated summary of the evaluation
+  aiAvailable?: boolean; // whether a real AI evaluation ran, or the local fallback engine was used
   inTalentPool: boolean;
   talentPoolNotes?: string;
   scheduledInterview?: string;

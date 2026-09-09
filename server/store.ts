@@ -49,6 +49,23 @@ import {
   updateEmployeeInDb,
   deleteEmployeeInDb,
 } from './employeeRepo';
+import {
+  loadAllJobs,
+  countJobs as countJobsInDb,
+  seedJobs,
+  createJobInDb,
+  updateJobInDb,
+  incrementJobApplications,
+  deleteJobInDb,
+} from './jobsRepo';
+import {
+  loadAllCandidates,
+  countCandidates as countCandidatesInDb,
+  seedCandidates,
+  bulkCreateCandidatesInDb,
+  updateCandidateInDb,
+  deleteCandidateInDb,
+} from './candidatesRepo';
 
 export class HRMSStore {
   public currentUserRole: UserRole = UserRole.HR_DIRECTOR;
@@ -1524,6 +1541,78 @@ export class HRMSStore {
   public async dbDeleteEmployee(id: string): Promise<void> {
     if (!isDatabaseConfigured) return;
     try { await deleteEmployeeInDb(id); } catch (err) { console.warn('[db] Failed to delete employee from Supabase:', err); }
+  }
+
+  /** Phase 2: same pattern as initEmployeesFromDb, for JobPosting. */
+  public async initJobsFromDb(): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try {
+      const existing = await countJobsInDb();
+      if (existing === 0 && this.jobs.length > 0) {
+        console.log(`[db] JobPosting table is empty — migrating ${this.jobs.length} demo job(s) into Supabase...`);
+        await seedJobs(this.jobs);
+      }
+      this.jobs = await loadAllJobs();
+      console.log(`[db] Loaded ${this.jobs.length} job(s) from Supabase.`);
+    } catch (err) {
+      console.warn('[db] Could not load jobs from Supabase — continuing on in-memory data:', err);
+    }
+  }
+
+  /** Phase 2: same pattern, for Candidate. Seeds after jobs (FK dependency). */
+  public async initCandidatesFromDb(): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try {
+      const existing = await countCandidatesInDb();
+      if (existing === 0 && this.candidates.length > 0) {
+        console.log(`[db] Candidate table is empty — migrating ${this.candidates.length} demo candidate(s) into Supabase...`);
+        await seedCandidates(this.candidates);
+      }
+      this.candidates = await loadAllCandidates();
+      console.log(`[db] Loaded ${this.candidates.length} candidate(s) from Supabase.`);
+    } catch (err) {
+      console.warn('[db] Could not load candidates from Supabase — continuing on in-memory data:', err);
+    }
+  }
+
+  public async dbCreateJob(j: JobPosting): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await createJobInDb(j); } catch (err) { console.warn('[db] Failed to persist new job to Supabase:', err); }
+  }
+
+  public async dbUpdateJob(id: string, patch: Partial<JobPosting>): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await updateJobInDb(id, patch); } catch (err) { console.warn('[db] Failed to persist job update to Supabase:', err); }
+  }
+
+  public async dbIncrementJobApplications(id: string, by: number): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await incrementJobApplications(id, by); } catch (err) { console.warn('[db] Failed to persist job application count to Supabase:', err); }
+  }
+
+  public async dbDeleteJob(id: string): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await deleteJobInDb(id); } catch (err) { console.warn('[db] Failed to delete job from Supabase:', err); }
+  }
+
+  public async dbCreateCandidate(c: Candidate): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await bulkCreateCandidatesInDb([c]); } catch (err) { console.warn('[db] Failed to persist new candidate to Supabase:', err); }
+  }
+
+  public async dbBulkCreateCandidates(list: Candidate[]): Promise<void> {
+    if (!isDatabaseConfigured || list.length === 0) return;
+    try { await bulkCreateCandidatesInDb(list); } catch (err) { console.warn('[db] Failed to persist bulk-uploaded candidates to Supabase:', err); }
+  }
+
+  public async dbUpdateCandidate(id: string, patch: Partial<Candidate>): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await updateCandidateInDb(id, patch); } catch (err) { console.warn('[db] Failed to persist candidate update to Supabase:', err); }
+  }
+
+  public async dbDeleteCandidate(id: string): Promise<void> {
+    if (!isDatabaseConfigured) return;
+    try { await deleteCandidateInDb(id); } catch (err) { console.warn('[db] Failed to delete candidate from Supabase:', err); }
   }
 
   /** Mark state mutated; a debounced write follows. Call from every mutating endpoint. */

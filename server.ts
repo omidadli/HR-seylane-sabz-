@@ -18,6 +18,7 @@ import {
 } from './server/leave-service';
 import {
   AttendanceRecord,
+  Candidate,
   CandidateCategory,
   CandidateStage,
   ChecklistItem,
@@ -163,7 +164,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/jobs', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.post('/api/jobs', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const title = String(req.body.title || '').trim();
     const department = String(req.body.department || '').trim();
     if (!title) return res.status(400).json({ error: 'عنوان شغلی الزامی است' });
@@ -197,6 +198,7 @@ async function startServer() {
     };
     dbStore.jobs.unshift(newJob);
     dbStore.markDirty();
+    await dbStore.dbCreateJob(newJob);
     res.status(201).json(newJob);
   });
 
@@ -204,26 +206,30 @@ async function startServer() {
     const job = dbStore.jobs.find(j => j.id === req.params.id);
     if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
     const { title, department, employmentType, location, description, requirements, status } = req.body;
+    const patch: Partial<JobPosting> = {};
     if (title !== undefined) {
       if (!String(title).trim()) return res.status(400).json({ error: 'عنوان شغلی نمی‌تواند خالی باشد' });
       job.title = String(title).trim();
+      patch.title = job.title;
     }
-    if (department !== undefined) job.department = String(department).trim() || job.department;
-    if (employmentType !== undefined) job.employmentType = employmentType;
-    if (location !== undefined) job.location = location;
-    if (description !== undefined) job.description = description;
-    if (requirements !== undefined) job.requirements = requirements;
+    if (department !== undefined) { job.department = String(department).trim() || job.department; patch.department = job.department; }
+    if (employmentType !== undefined) { job.employmentType = employmentType; patch.employmentType = employmentType; }
+    if (location !== undefined) { job.location = location; patch.location = location; }
+    if (description !== undefined) { job.description = description; patch.description = description; }
+    if (requirements !== undefined) { job.requirements = requirements; patch.requirements = requirements; }
     if (status !== undefined) {
       if (!['ACTIVE', 'DRAFT', 'ARCHIVED'].includes(status)) {
         return res.status(400).json({ error: 'وضعیت نامعتبر است (ACTIVE/DRAFT/ARCHIVED)' });
       }
       job.status = status;
+      patch.status = status;
     }
     dbStore.markDirty();
+    await dbStore.dbUpdateJob(job.id, patch);
     res.json(job);
   });
 
-  app.delete('/api/jobs/:id', requireRole(UserRole.HR_DIRECTOR), (req, res) => {
+  app.delete('/api/jobs/:id', requireRole(UserRole.HR_DIRECTOR), async (req, res) => {
     const idx = dbStore.jobs.findIndex(j => j.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
     const linked = dbStore.candidates.filter(c => c.jobId === req.params.id).length;
@@ -235,10 +241,11 @@ async function startServer() {
     }
     dbStore.jobs.splice(idx, 1);
     dbStore.markDirty();
+    await dbStore.dbDeleteJob(req.params.id);
     res.json({ success: true, deletedId: req.params.id });
   });
 
-  app.put('/api/jobs/:id/criteria', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.put('/api/jobs/:id/criteria', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const { id } = req.params;
     const {
       criteria,
@@ -252,27 +259,31 @@ async function startServer() {
     const job = dbStore.jobs.find(j => j.id === id);
     if (!job) return res.status(404).json({ error: 'موقعیت شغلی یافت نشد' });
 
+    const patch: Partial<JobPosting> = {};
     if (Array.isArray(criteria)) {
       const weightSum = criteria.reduce((s: number, c: any) => s + (Number(c.weight) || 0), 0);
       if (criteria.length > 0 && Math.abs(weightSum - 100) > 1) {
         return res.status(400).json({ error: `مجموع وزن شاخص‌ها باید ۱۰۰ باشد (مقدار فعلی: ${weightSum})` });
       }
       job.criteria = criteria;
+      patch.criteria = criteria;
     }
-    if (scoringMethod) job.scoringMethod = scoringMethod;
-    if (aiRigor) job.aiRigor = aiRigor;
-    if (evaluationInstructions !== undefined) job.evaluationInstructions = evaluationInstructions;
+    if (scoringMethod) { job.scoringMethod = scoringMethod; patch.scoringMethod = scoringMethod; }
+    if (aiRigor) { job.aiRigor = aiRigor; patch.aiRigor = aiRigor; }
+    if (evaluationInstructions !== undefined) { job.evaluationInstructions = evaluationInstructions; patch.evaluationInstructions = evaluationInstructions; }
     if (typeof interviewPriorityThreshold === 'number') {
       if (interviewPriorityThreshold < 0 || interviewPriorityThreshold > 10) {
         return res.status(400).json({ error: 'حد نصاب اولویت مصاحبه باید بین ۰ تا ۱۰ باشد' });
       }
       job.interviewPriorityThreshold = interviewPriorityThreshold;
+      patch.interviewPriorityThreshold = interviewPriorityThreshold;
     }
     if (typeof initialRejectionThreshold === 'number') {
       if (initialRejectionThreshold < 0 || initialRejectionThreshold > 10) {
         return res.status(400).json({ error: 'حد نصاب رد اولیه باید بین ۰ تا ۱۰ باشد' });
       }
       job.initialRejectionThreshold = initialRejectionThreshold;
+      patch.initialRejectionThreshold = initialRejectionThreshold;
     }
     if (
       typeof job.interviewPriorityThreshold === 'number' &&
@@ -283,6 +294,7 @@ async function startServer() {
     }
 
     dbStore.markDirty();
+    await dbStore.dbUpdateJob(job.id, patch);
     res.json({
       success: true,
       message: 'شاخصه‌ها، وزن‌دهی و متد ارزیابی هوش مصنوعی با موفقیت بروزرسانی شد',
@@ -371,7 +383,7 @@ async function startServer() {
     res.json(list);
   });
 
-  app.post('/api/candidates', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.post('/api/candidates', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const fullName = String(req.body.fullName || '').trim();
     const email = String(req.body.email || '').trim();
     const jobId = req.body.jobId;
@@ -407,6 +419,8 @@ async function startServer() {
     dbStore.candidates.unshift(newCand);
     job.applicationsCount += 1;
     dbStore.markDirty();
+    await dbStore.dbCreateCandidate(newCand);
+    await dbStore.dbIncrementJobApplications(job.id, 1);
     res.status(201).json(newCand);
   });
 
@@ -428,7 +442,7 @@ async function startServer() {
     [CandidateStage.REJECTED]: 'رد شده',
   };
 
-  app.patch('/api/candidates/:id/stage', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.patch('/api/candidates/:id/stage', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const { id } = req.params;
     const { stage } = req.body;
     if (!Object.values(CandidateStage).includes(stage)) {
@@ -501,6 +515,7 @@ async function startServer() {
         commuteAllowanceToman: 0,
       };
       dbStore.employees.push(newEmp);
+      await dbStore.dbCreateEmployee(newEmp);
 
       const due = formatJalaliDate(addJalaliDays(now.jalali, 7), true);
       const onboardingTitles = [
@@ -522,6 +537,7 @@ async function startServer() {
       }));
       dbStore.checklistItems.unshift(...createdChecklistItems);
       dbStore.markDirty();
+      await dbStore.dbUpdateCandidate(cand.id, { stage: CandidateStage.HIRED });
 
       return res.json({
         ...cand,
@@ -533,10 +549,11 @@ async function startServer() {
 
     cand.stage = stage;
     dbStore.markDirty();
+    await dbStore.dbUpdateCandidate(cand.id, { stage });
     res.json(cand);
   });
 
-  app.patch('/api/candidates/:id/talent-pool', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.patch('/api/candidates/:id/talent-pool', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const { id } = req.params;
     const { inTalentPool, notes } = req.body;
     const cand = dbStore.candidates.find(c => c.id === id);
@@ -545,12 +562,14 @@ async function startServer() {
       return res.status(400).json({ error: 'وضعیت استخر استعداد نامعتبر است' });
     }
     cand.inTalentPool = inTalentPool;
-    if (notes) cand.talentPoolNotes = notes;
+    const patch: Partial<Candidate> = { inTalentPool };
+    if (notes) { cand.talentPoolNotes = notes; patch.talentPoolNotes = notes; }
     dbStore.markDirty();
+    await dbStore.dbUpdateCandidate(cand.id, patch);
     res.json(cand);
   });
 
-  app.post('/api/candidates/:id/schedule-interview', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.post('/api/candidates/:id/schedule-interview', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const { id } = req.params;
     const { interviewJalali, interviewType, interviewNotes } = req.body;
     const cand = dbStore.candidates.find(c => c.id === id);
@@ -561,13 +580,16 @@ async function startServer() {
     cand.interviewJalali = interviewJalali;
     cand.interviewType = interviewType;
     cand.interviewNotes = interviewNotes;
+    const patch: Partial<Candidate> = { interviewJalali, interviewType, interviewNotes };
     if (
       cand.stage === CandidateStage.INITIAL_SCREENING ||
       cand.stage === CandidateStage.PHONE_INTERVIEW
     ) {
       cand.stage = CandidateStage.IN_PERSON_INTERVIEW;
+      patch.stage = cand.stage;
     }
     dbStore.markDirty();
+    await dbStore.dbUpdateCandidate(cand.id, patch);
     res.json(cand);
   });
 
@@ -758,6 +780,8 @@ async function startServer() {
       }
       targetJob.applicationsCount += newCandidatesBatch.length;
       dbStore.markDirty();
+      await dbStore.dbBulkCreateCandidates(newCandidatesBatch);
+      await dbStore.dbIncrementJobApplications(targetJob.id, newCandidatesBatch.length);
 
       const usedLocalEngine = newCandidatesBatch.some(c => c.aiAvailable === false);
       res.json({
@@ -1183,7 +1207,7 @@ async function startServer() {
     });
   });
 
-  app.post('/api/candidates/:id/draft-email', requireRole(...HR_AND_MANAGER), (req, res) => {
+  app.post('/api/candidates/:id/draft-email', requireRole(...HR_AND_MANAGER), async (req, res) => {
     const { id } = req.params;
     const { type, subject, body } = req.body;
     const cand = dbStore.candidates.find(c => c.id === id);
@@ -1200,6 +1224,7 @@ async function startServer() {
       createdAtJalali: tehranNow().jalaliString,
     };
     dbStore.markDirty();
+    await dbStore.dbUpdateCandidate(cand.id, { emailDraft: cand.emailDraft });
     res.json({ success: true, emailDraft: cand.emailDraft });
   });
 
@@ -2018,6 +2043,8 @@ async function startServer() {
   }
 
   await dbStore.initEmployeesFromDb();
+  await dbStore.initJobsFromDb();
+  await dbStore.initCandidatesFromDb();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`سامانه منابع انسانی کارا بر روی پورت ${PORT} آماده به کار است.`);

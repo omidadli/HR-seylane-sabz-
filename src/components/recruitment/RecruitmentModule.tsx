@@ -87,6 +87,8 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
   const [selectedStageFilters, setSelectedStageFilters] = useState<CandidateStage[]>([]);
   const [selectedCategoryFilters, setSelectedCategoryFilters] = useState<CandidateCategory[]>([]);
   const [onlyTalentPool, setOnlyTalentPool] = useState(false);
+  const [appliedFromJalali, setAppliedFromJalali] = useState('');
+  const [appliedToJalali, setAppliedToJalali] = useState('');
 
   // Candidates filtered by job, search, and multi-select chips
   const filteredCandidates = useMemo(() => {
@@ -124,6 +126,14 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
         return false;
       }
 
+      // Applied date range filter (Jalali strings, e.g. ۱۴۰۳/۰۶/۱۵ — fixed-width so string compare works)
+      if (appliedFromJalali && c.appliedAtJalali && c.appliedAtJalali < appliedFromJalali) {
+        return false;
+      }
+      if (appliedToJalali && c.appliedAtJalali && c.appliedAtJalali > appliedToJalali) {
+        return false;
+      }
+
       return true;
     });
   }, [
@@ -133,6 +143,8 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
     selectedStageFilters,
     selectedCategoryFilters,
     onlyTalentPool,
+    appliedFromJalali,
+    appliedToJalali,
   ]);
 
   const toggleStageFilter = (stage: CandidateStage) => {
@@ -152,13 +164,17 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
     setSelectedStageFilters([]);
     setSelectedCategoryFilters([]);
     setOnlyTalentPool(false);
+    setAppliedFromJalali('');
+    setAppliedToJalali('');
   };
 
   const hasActiveFilters =
     searchQuery.trim().length > 0 ||
     selectedStageFilters.length > 0 ||
     selectedCategoryFilters.length > 0 ||
-    onlyTalentPool;
+    onlyTalentPool ||
+    appliedFromJalali.trim().length > 0 ||
+    appliedToJalali.trim().length > 0;
 
   const handleToggleCompare = (candidate: Candidate) => {
     if (selectedCompareIds.includes(candidate.id)) {
@@ -414,6 +430,27 @@ export const RecruitmentModule: React.FC<RecruitmentModuleProps> = ({
                   </option>
                 ))}
               </select>
+            </div>
+
+            {/* Applied date range filter (Jalali, e.g. ۱۴۰۳/۰۶/۱۵) */}
+            <div className="flex items-center gap-1.5 bg-surface-2 px-3 py-2 rounded-[10px] border border-border-default text-xs">
+              <input
+                type="text"
+                value={appliedFromJalali}
+                onChange={(e) => setAppliedFromJalali(e.target.value)}
+                placeholder="از تاریخ ۱۴۰۳/۰۱/۰۱"
+                dir="ltr"
+                className="w-24 bg-transparent text-text-1 placeholder:text-text-3 focus:outline-none text-center"
+              />
+              <span className="text-text-3">تا</span>
+              <input
+                type="text"
+                value={appliedToJalali}
+                onChange={(e) => setAppliedToJalali(e.target.value)}
+                placeholder="۱۴۰۳/۱۲/۲۹"
+                dir="ltr"
+                className="w-24 bg-transparent text-text-1 placeholder:text-text-3 focus:outline-none text-center"
+              />
             </div>
 
             {/* Clear Filters Button if any active */}

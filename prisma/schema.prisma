@@ -88,6 +88,12 @@ model JobPosting {
   criteria        JobCriteria[]  // معیارهای ارزیابی وزنی هوش مصنوعی
   candidates      Candidate[]
   createdAtJalali String         // تاریخ شمسی ایجاد (مثلا ۱۴۰۳/۰۶/۱۵)
+  applicationsCount          Int     @default(0) // تعداد درخواست‌های دریافتی
+  scoringMethod              String? // WEIGHTED_AVG | THRESHOLD_VETO | GEOMETRIC_MEAN
+  aiRigor                    String? // STRICT | BALANCED | LENIENT
+  interviewPriorityThreshold Float?
+  initialRejectionThreshold  Float?
+  evaluationInstructions     String? @db.Text
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
 }
@@ -117,6 +123,9 @@ model Candidate {
   weaknesses        String[]           // نقاط ضعف یا کمبودها
   resumeQuotes      String[]           // شواهد متنی مستقیم از داخل رزومه
   criteriaScores    Json?              // نمرات مجزا به تفکیک شاخص‌ها جهت رادار چارت
+  criteriaFeedback  Json?              // توضیح هوش مصنوعی برای هر شاخص
+  executiveSummary  String?            @db.Text // جمع‌بندی نهایی ارزیابی هوش مصنوعی
+  aiAvailable       Boolean            @default(true) // آیا ارزیابی توسط هوش مصنوعی واقعی انجام شد یا موتور محلی جایگزین
   inTalentPool      Boolean            @default(false) // استخر استعدادها
   talentPoolNotes   String?            // یادداشت استخر استعدادها
   scheduledInterview DateTime?         // تاریخ و زمان مصاحبه
@@ -126,6 +135,7 @@ model Candidate {
   emailDraftSubject String?            // پیش‌نویس ایمیل - موضوع
   emailDraftBody    String?            @db.Text // پیش‌نویس ایمیل - متن
   emailDraftType    String?            // REJECTION یا INVITATION
+  emailDraftCreatedAtJalali String?    // تاریخ شمسی ایجاد پیش‌نویس ایمیل
   appliedAtJalali   String             // تاریخ ثبت درخواست به شمسی
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
